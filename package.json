@@ -1,0 +1,18 @@
+{
+  "name": "macs",
+  "version": "1.0.0",
+  "description": "Multi-Agent Orchestration System — Claude Code + local LLMs via Ollama",
+  "type": "module",
+  "main": "build/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node build/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3",
+    "@types/node": "^22.15.0"
+  }
+}

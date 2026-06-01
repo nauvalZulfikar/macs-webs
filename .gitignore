@@ -1,0 +1,48 @@
+# Node
+node_modules/
+build/
+dist/
+.next/
+*.tsbuildinfo
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# MACS data + uploads
+web/data/*.db
+web/data/*.db-journal
+web/data/*.db-wal
+web/data/*.db-shm
+web/data/uploads/
+
+# Logs
+*.log
+web/logs/
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+
+# STATE files (per-project working state, not project source)
+.macs/STATE.md
+.macs/STATE.archive-*.md
+
+# browser-agent runs (large artifacts)
+agents/browser-agent/runs/
+agents/browser-agent/profiles/
+
+# Frontend cache
+web/frontend/.vite/
+web/frontend/node_modules/
+
+# Local env
+.env
+.env.local
+.env.*.local

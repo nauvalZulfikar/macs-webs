@@ -1,0 +1,26 @@
+agent:
+  max_steps: 25
+  max_actions_per_step: 3
+  use_vision: true        # qwen2.5vl:7b supports vision — screenshots help element selection
+  use_thinking: false     # qwen's <think> tag is slow on CPU/Metal
+  flash_mode: true        # compact prompts, shorter responses
+  enable_planning: false  # extra planner pass — disable to save tokens
+  llm_timeout: 180        # seconds per LLM call
+  step_timeout: 300       # seconds per action step
+
+models:
+  main: ollama:qwen2.5vl:7b       # primary brain — vision-capable, reasoning & action
+  page_extraction: ollama:gemma3:4b  # cheap, for extracting page text
+  judge: claude:claude-opus-4-7   # security judge (needs ANTHROPIC_API_KEY)
+
+browser:
+  headless: true
+  viewport: { width: 1366, height: 850 }
+  storage_dir: /Users/shaka-mac-mini/coding-projects/macs/agents/browser-agent/profiles
+  default_profile: default
+
+memory:
+  runs_dir: /Users/shaka-mac-mini/coding-projects/macs/agents/browser-agent/runs
+
+safety:
+  block_domains: []
