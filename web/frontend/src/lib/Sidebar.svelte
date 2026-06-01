@@ -197,6 +197,8 @@
         )
       : projects
   )
+  let webPrtflProjects = $derived(filteredProjects.filter((p) => p.category === 'web_prtfl'))
+  let otherProjects = $derived(filteredProjects.filter((p) => p.category !== 'web_prtfl'))
 </script>
 
 <aside class="flex h-dvh flex-col border-r border-neutral-800 bg-neutral-950">
@@ -293,7 +295,7 @@
 
   <!-- Project list -->
   <div class="flex-1 overflow-y-auto" data-testid="project-list">
-    {#each filteredProjects as p (p.id)}
+    {#snippet projectRow(p)}
       {@const isOpen = expanded.has(p.id)}
       {@const isSelected = p.id === selectedProjectId}
       {@const running = runningByProject.get(p.id)}
@@ -402,7 +404,27 @@
           {/if}
         </div>
       {/if}
-    {/each}
+    {/snippet}
+
+    {#if webPrtflProjects.length > 0}
+      <div class="border-t border-neutral-900 bg-neutral-950/80 px-3 py-1.5 text-[10px] font-medium uppercase tracking-wider text-emerald-400/90" data-testid="group-header-web-prtfl">
+        🌐 Session web_prtfl
+      </div>
+      {#each webPrtflProjects as p (p.id)}
+        {@render projectRow(p)}
+      {/each}
+    {/if}
+
+    {#if otherProjects.length > 0}
+      {#if webPrtflProjects.length > 0}
+        <div class="border-t border-neutral-900 bg-neutral-950/80 px-3 py-1.5 text-[10px] font-medium uppercase tracking-wider text-neutral-500" data-testid="group-header-other">
+          All projects
+        </div>
+      {/if}
+      {#each otherProjects as p (p.id)}
+        {@render projectRow(p)}
+      {/each}
+    {/if}
 
     {#if filteredProjects.length === 0}
       <div class="px-3 py-6 text-center text-xs text-neutral-500">No projects match "{query}"</div>
