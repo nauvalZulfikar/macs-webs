@@ -15,6 +15,7 @@ Endpoints:
 import asyncio
 import json
 import os
+import re
 import subprocess
 import threading
 import time
@@ -282,7 +283,8 @@ async def _async_autoonboard(paths: list[str]):
 # the stream gets stuck "running" forever, leaving the UI showing a thinking
 # bubble until manual hard-refresh. Watchdog scans every 30s and force-emits
 # `stream_done` with an error so the frontend exits its running state.
-STREAM_STUCK_S = int(os.environ.get("STREAM_STUCK_S", "300"))
+STREAM_STUCK_S = int(os.environ.get("STREAM_STUCK_S", "180"))
+HEARTBEAT_INTERVAL_S = int(os.environ.get("STREAM_HEARTBEAT_S", "10"))
 
 
 async def _stream_watchdog_loop():
@@ -439,6 +441,116 @@ _streams: Dict[str, "ActiveStream"] = {}
 _active_by_key: Dict[str, str] = {}  # "{pid}:{sid_or_'new'}" → stream_id (only while live)
 
 
+# ─── STATE.md context survivability ─────────────────────────────────────
+# Each project optionally maintains `<project_root>/.macs/STATE.md`. Backend:
+#   1. Pre-turn: reads last MAX_STATE_INJECT_BYTES of the file and prepends
+#      it to the user message as a <system-context> block. This survives
+#      chat compaction because it's re-injected fresh every turn.
+#   2. Post-turn: scans the assistant's final text for a STATUS: block and
+#      auto-appends an entry (fallback in case claude forgot to write it).
+# Rules are documented in <project>/CLAUDE.md so claude knows the contract.
+
+STATE_DIR_NAME = ".macs"
+STATE_FILE_NAME = "STATE.md"
+MAX_STATE_INJECT_BYTES = 2048
+STATE_ARCHIVE_BYTES = 100_000  # rotate when file > 100KB
+
+
+def _state_file_path(project_path: str) -> Path:
+    return Path(project_path) / STATE_DIR_NAME / STATE_FILE_NAME
+
+
+def _read_state_tail(project_path: str) -> Optional[str]:
+    sf = _state_file_path(project_path)
+    if not sf.is_file():
+        return None
+    try:
+        data = sf.read_text(encoding="utf-8", errors="replace")
+        return data[-MAX_STATE_INJECT_BYTES:]
+    except Exception:
+        return None
+
+
+def _wrap_with_state(project_path: str, message: str) -> str:
+    """Prepend STATE.md tail as <system-context> block."""
+    tail = _read_state_tail(project_path)
+    if not tail or not tail.strip():
+        return message
+    return (
+        "<system-context>\n"
+        f"Recent state from .macs/STATE.md (last ~{MAX_STATE_INJECT_BYTES}B). "
+        "Use this to know where you left off; do NOT echo it back unless asked.\n"
+        f"{tail.strip()}\n"
+        "</system-context>\n\n"
+        + message
+    )
+
+
+# Match a STATUS: block followed by 1+ "- key: value" lines, optionally
+# followed by a PERSISTED: block with bullet items. Both case-insensitive.
+_STATUS_BLOCK_RE = re.compile(
+    r"STATUS:\s*\n((?:[ \t]*-[ \t]*[a-z_]+:[ \t]*.+\n?)+)"
+    r"(?:\s*PERSISTED:\s*\n((?:[ \t]*-[ \t]*.+\n?)+))?",
+    re.IGNORECASE,
+)
+
+
+def _maybe_append_state(s: "ActiveStream", project_path: str):
+    """Scan the latest assistant text events for STATUS block, append to STATE.md.
+    Idempotent-ish: only appends one entry per stream. Best-effort, never raises."""
+    try:
+        final_text = ""
+        for evt in reversed(s.events):
+            if evt.get("type") != "assistant":
+                continue
+            content = (evt.get("message") or {}).get("content") or []
+            for blk in content:
+                if blk.get("type") == "text":
+                    final_text = (blk.get("text") or "") + "\n" + final_text
+            if final_text.strip():
+                break
+        if not final_text.strip():
+            return
+        m = _STATUS_BLOCK_RE.search(final_text)
+        if not m:
+            return
+        status_body = m.group(1).rstrip()
+        persisted_body = (m.group(2) or "").rstrip()
+        # Build entry
+        from datetime import datetime
+        ts = datetime.now().astimezone().isoformat(timespec="seconds")
+        user_msg_preview = (s.user_message or "").replace("\n", " ").strip()[:120]
+        # Strip our own injected system-context wrapper if it sneaked in
+        if user_msg_preview.startswith("<system-context>"):
+            user_msg_preview = "(continued)"
+        persisted_inline = ""
+        if persisted_body:
+            persisted_inline = "\npersisted:\n" + persisted_body
+        entry = (
+            f"\n---\n"
+            f"ts: {ts}\n"
+            f"turn: {user_msg_preview}\n"
+            f"status:\n{status_body}"
+            f"{persisted_inline}\n"
+            f"---\n"
+        )
+        # Ensure folder
+        state_dir = Path(project_path) / STATE_DIR_NAME
+        state_dir.mkdir(parents=True, exist_ok=True)
+        sf = state_dir / STATE_FILE_NAME
+        # Rotate if too big
+        if sf.is_file() and sf.stat().st_size > STATE_ARCHIVE_BYTES:
+            archive = state_dir / f"STATE.archive-{int(time.time())}.md"
+            try:
+                sf.rename(archive)
+            except Exception:
+                pass
+        with sf.open("a", encoding="utf-8") as f:
+            f.write(entry)
+    except Exception as e:
+        print(f"[state] append error: {e}")
+
+
 def _capture_cost(s: "ActiveStream"):
     """Scan events for the result row and persist cost. Idempotent on stream_id."""
     cost = 0.0
@@ -532,13 +644,44 @@ def _maybe_checkpoint(s: ActiveStream, project_path: str, tool_use_id: str, tool
         pass
 
 
+async def _heartbeat_loop(s: ActiveStream):
+    """Emit a 'heartbeat' event every HEARTBEAT_INTERVAL_S so clients know the
+    backend is alive even while claude is mid-think and not emitting content
+    events. Frontend should consume but not render these — just bump
+    last-event timestamp so the stuck-stream detector doesn't false-fire."""
+    try:
+        while not s.done:
+            await asyncio.sleep(HEARTBEAT_INTERVAL_S)
+            if s.done:
+                break
+            # Only emit if no other event landed in the last interval — avoid
+            # flooding when claude is actively streaming.
+            since = time.time() - s.last_event_at
+            if since < (HEARTBEAT_INTERVAL_S - 1):
+                continue
+            s.events.append({"type": "heartbeat", "ts": time.time()})
+            s.last_event_at = time.time()
+            try:
+                s.new_event.set()
+            except Exception:
+                pass
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        print(f"[hb] error for {s.stream_id[:8]}: {e}")
+
+
 async def _consume_into_buffer(s: ActiveStream, project_path: str):
     """Background task: drive claude_runner.stream_chat() into the buffer."""
     pending_tool_uses = {}  # id -> name (Edit/Write/Bash etc.) awaiting result
+    # Prepend STATE.md tail as <system-context> so claude has the running
+    # context fresh, even after chat history is compacted upstream.
+    injected_message = _wrap_with_state(project_path, s.user_message)
+    hb_task = asyncio.create_task(_heartbeat_loop(s))
     try:
         async for evt in stream_chat(
             project_path=project_path,
-            message=s.user_message,
+            message=injected_message,
             session_id=s.session_id,
             elevated=s.elevated,
         ):
@@ -595,6 +738,17 @@ async def _consume_into_buffer(s: ActiveStream, project_path: str):
         # Persist cost/tokens for the dashboard
         try:
             _capture_cost(s)
+        except Exception:
+            pass
+        # STATE.md post-turn extractor — fallback if claude wrote STATUS but
+        # didn't append to .macs/STATE.md himself.
+        try:
+            _maybe_append_state(s, project_path)
+        except Exception as e:
+            print(f"[state] post-turn error: {e}")
+        # Stop heartbeat task
+        try:
+            hb_task.cancel()
         except Exception:
             pass
         # Update MissionAgent row if this stream is part of a mission

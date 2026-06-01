@@ -11,6 +11,7 @@
   import { marked } from 'marked'
   import ArtifactsPanel from './ArtifactsPanel.svelte'
   import BrowserViewer from './BrowserViewer.svelte'
+  import StatePanel from './StatePanel.svelte'
   import VoiceInput from './VoiceInput.svelte'
   import EditorPane from './EditorPane.svelte'
   import CheckpointTimeline from './CheckpointTimeline.svelte'
@@ -32,6 +33,7 @@
   let artifactsOpen = $state(false)
   let artifactsCount = $state(0)
   let editorOpen = $state(false)
+let statePanelOpen = $state(false)
   let editorPath = $state(null)
   let editedFiles = $state([]) // file paths claude touched in this stream
 
@@ -321,6 +323,41 @@
   let streamStuck = $derived(pending && sinceLastEvtS > 90)
   let staleMessage = $state(null) // saved msg to retry from stuck banner
 
+  // Silent-stop detection — claude's last "turn" (all assistant messages
+  // since the most recent user message) had tool use(s) but the final
+  // assistant text has no STATUS closure block per CLAUDE.md contract.
+  //
+  // Important: the session loader splits a single Claude API turn into
+  // multiple assistant `messages` (one per content block / tool_result
+  // boundary). So we must walk backwards across ALL assistant messages until
+  // the most recent user message to evaluate the WHOLE turn, not just the
+  // last bubble.
+  const STATUS_RE = /STATUS:\s*\n/i
+  let silentlyStopped = $derived.by(() => {
+    if (pending) return false
+    const n = messages.length
+    if (!n) return false
+    let hadTools = false
+    let finalText = null // latest non-empty assistant text in this turn
+    for (let i = n - 1; i >= 0; i--) {
+      const m = messages[i]
+      if (m.role === 'user') break
+      if (m.role !== 'assistant') continue
+      if (Array.isArray(m.toolUses) && m.toolUses.length > 0) hadTools = true
+      if (finalText === null && (m.text || '').trim()) finalText = m.text
+    }
+    if (!hadTools) return false
+    if (finalText === null) return true  // tool calls + zero text → silently stopped
+    return !STATUS_RE.test(finalText)
+  })
+
+  function requestRecap() {
+    input = "Lo berhenti tanpa STATUS blok yg diwajibkan CLAUDE.md. " +
+            "Recap dulu: apa yg udah lo ubah (file + ringkasan perubahan), " +
+            "apa next step kalau task belum kelar, apa blocked. " +
+            "Lalu tutup dengan blok STATUS + PERSISTED sesuai format CLAUDE.md."
+  }
+
   async function abortStuck() {
     if (!myStream?.streamId) return
     try { await abortStream(myStream.streamId) } catch {}
@@ -532,6 +569,12 @@
       data-testid="editor-toggle-btn"
     >📂 Code{editedFiles.length > 0 ? ` ${editedFiles.length}` : ''}</button>
     <button
+      class="rounded-md px-2 py-1 text-xs {statePanelOpen ? 'bg-emerald-500/20 text-emerald-300' : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100'}"
+      onclick={() => (statePanelOpen = !statePanelOpen)}
+      data-testid="state-panel-toggle"
+      title="STATE.md viewer"
+    >📋 State</button>
+    <button
       class="rounded-md px-2 py-1 text-xs text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100 disabled:opacity-50"
       onclick={openHistory}
       disabled={pending}
@@ -647,6 +690,25 @@
     {#if error}
       <div class="mx-auto mt-3 max-w-2xl rounded-md border border-red-500/40 bg-red-500/10 p-2 text-xs text-red-300" data-testid="chat-error-banner">
         {error}
+      </div>
+    {/if}
+
+    {#if silentlyStopped}
+      <div class="mx-auto mt-3 flex max-w-2xl items-center justify-between gap-3 rounded-md border border-orange-500/40 bg-orange-500/10 p-3 text-xs text-orange-200" data-testid="silent-stop-banner">
+        <div class="min-w-0">
+          <div class="font-medium text-orange-100">⚠️ Berhenti tanpa closure</div>
+          <div class="text-orange-300/80">
+            Respons terakhir pake tools tapi gak ada STATUS blok. Kemungkinan claude berhenti tanpa kasih ringkasan akhir.
+            Klik "Minta recap" → input akan diisi prompt yg force claude kasih recap + STATUS proper.
+          </div>
+        </div>
+        <div class="flex shrink-0 gap-1.5">
+          <button
+            class="rounded-md border border-orange-400/40 bg-orange-500/15 px-2.5 py-1 font-medium hover:bg-orange-500/25"
+            onclick={requestRecap}
+            data-testid="silent-stop-recap-btn"
+          >Minta recap</button>
+        </div>
       </div>
     {/if}
 
@@ -793,6 +855,12 @@
     />
   </aside>
 {/if}
+
+<StatePanel
+  projectId={project.id}
+  open={statePanelOpen}
+  onClose={() => (statePanelOpen = false)}
+/>
 
 <!-- history drawer -->
 {#if historyOpen}

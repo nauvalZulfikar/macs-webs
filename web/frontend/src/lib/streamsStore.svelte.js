@@ -216,6 +216,17 @@ async function subscribeStream(key, onEvent) {
           } catch {
             continue;
           }
+          // Heartbeat events keep the stuck-stream detector honest: backend
+          // emits them every ~10s while claude is mid-think (no content
+          // events), so frontend never false-thinks "stale". They're not
+          // stored in events[] and not surfaced to handlers — pure timestamp
+          // bump.
+          if (evt.type === "heartbeat") {
+            patch(key, (s) => {
+              s.lastEventAt = nowMs();
+            });
+            continue;
+          }
           patch(key, (s) => {
             s.events = [...s.events, evt];
             s.lastEventAt = nowMs();
@@ -354,20 +365,29 @@ function startPollingFallback(key) {
         data.total_events,
       );
       if (fresh.length) {
-        patch(key, (s) => {
-          const have = s.events.length;
-          const want = data.total_events;
-          const need = want - have;
-          if (need <= 0) return;
-          const toAppend = fresh.slice(-need);
-          s.events = [...s.events, ...toAppend];
-          s.lastEventAt = nowMs();
-          for (const e of toAppend) {
-            if (e.session_id) s.sessionId = e.session_id;
-            if (e.type === "stream_done") s.done = true;
-            if (e.type === "error") s.error = e.error || s.error;
-          }
-        });
+        // Strip heartbeats — they're meant for liveness only, not state.
+        const nonHb = fresh.filter((e) => e?.type !== "heartbeat");
+        if (nonHb.length === 0) {
+          // Only heartbeats came through — bump timestamp, skip merging.
+          patch(key, (s) => {
+            s.lastEventAt = nowMs();
+          });
+        } else {
+          patch(key, (s) => {
+            const have = s.events.length;
+            const want = data.total_events;
+            const need = want - have;
+            if (need <= 0) return;
+            const toAppend = nonHb.slice(-need);
+            s.events = [...s.events, ...toAppend];
+            s.lastEventAt = nowMs();
+            for (const e of toAppend) {
+              if (e.session_id) s.sessionId = e.session_id;
+              if (e.type === "stream_done") s.done = true;
+              if (e.type === "error") s.error = e.error || s.error;
+            }
+          });
+        }
       } else if (data.done) {
         patch(key, (s) => {
           s.done = true;
