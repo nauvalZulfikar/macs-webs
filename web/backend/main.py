@@ -688,6 +688,19 @@ async def _consume_into_buffer(s: ActiveStream, project_path: str):
             sid = evt.get("session_id")
             if sid:
                 s.session_id = sid
+            # Defensive cap: a single event >2MB is almost always a giant tool
+            # output (Read of huge file, Bash dumping a binary). Truncate so
+            # _streams memory doesn't grow without bound across hundreds of
+            # concurrent streams.
+            try:
+                if len(json.dumps(evt)) > 2 * 1024 * 1024:
+                    evt = {
+                        "type": evt.get("type", "unknown"),
+                        "truncated": True,
+                        "reason": "event >2MB, dropped to prevent stream-buffer OOM",
+                    }
+            except Exception:
+                pass
             s.events.append(evt)
             s.last_event_at = time.time()
             s.new_event.set()
@@ -805,9 +818,11 @@ async def login(payload: LoginPayload):
 
 
 @app.post("/api/auth/logout")
-async def logout():
+async def logout(request: Request):
     resp = JSONResponse({"ok": True})
-    clear_cookie(resp)
+    # Pass the actual cookie value so the server can add it to the in-memory
+    # revoke set. Without this, a captured cookie remains valid after logout.
+    clear_cookie(resp, cookie_value=request.cookies.get("pw_session"))
     return resp
 
 
@@ -907,11 +922,18 @@ async def create_project(payload: CreateProjectPayload, session: Session = Depen
         if stack == "git":
             if not payload.git_url:
                 raise HTTPException(400, "stack='git' requires git_url")
+            git_url = payload.git_url.strip()
+            # Defense in depth: reject any git_url that git itself would
+            # interpret as a flag (e.g. --upload-pack=evil, --exec=evil).
+            # Subprocess list-form blocks shell injection, but git argv parsing
+            # has historical CVEs around URLs that begin with "-".
+            if git_url.startswith("-") or "\n" in git_url or "\r" in git_url:
+                raise HTTPException(400, "invalid git_url (must not start with '-' or contain newlines)")
             # git clone insists target not exist
             if target.exists():
                 target.rmdir()
             r = subprocess.run(
-                ["git", "clone", payload.git_url, str(target)],
+                ["git", "clone", "--", git_url, str(target)],
                 capture_output=True, text=True, timeout=180,
             )
             scaffold_log = (r.stdout + r.stderr).strip()[-600:]
@@ -988,14 +1010,24 @@ async def create_project(payload: CreateProjectPayload, session: Session = Depen
 @app.delete("/api/projects/{pid}")
 def delete_project(pid: int, session: Session = Depends(get_session)):
     """Un-register a project from MACS DB. Does NOT touch the folder on disk
-    or the session jsonl files in ~/.claude/projects/."""
+    or the session jsonl files in ~/.claude/projects/. Also aborts any
+    in-flight streams for this project so we don't burn tokens on orphans."""
     project = session.get(Project, pid)
     if not project:
         raise HTTPException(404, "project not found")
     name = project.name
+    # Abort active streams tied to this project before unregistering.
+    aborted = 0
+    for sid, s in list(_streams.items()):
+        if s.project_id == pid and s.task and not s.task.done():
+            try:
+                s.task.cancel()
+                aborted += 1
+            except Exception:
+                pass
     session.delete(project)
     session.commit()
-    return {"ok": True, "deleted_pid": pid, "name": name}
+    return {"ok": True, "deleted_pid": pid, "name": name, "streams_aborted": aborted}
 
 
 @app.get("/api/projects/{pid}/sessions")
@@ -1125,6 +1157,20 @@ async def chat_start(pid: int, payload: ChatPayload, session: Session = Depends(
         elevated=payload.elevated,
         new_conversation=payload.new_conversation,
     )
+    # Silent-drop guard: if we reused an existing stream but the incoming
+    # message is different from the active stream's user_message, the
+    # incoming message would be dropped without trace. Return 409 so the
+    # frontend can show a toast and let the user resend.
+    if reused and (payload.message or "").strip() != (s.user_message or "").strip():
+        return JSONResponse(
+            status_code=409,
+            content={
+                "error": "stream_busy",
+                "active_stream_id": s.stream_id,
+                "busy_message": (s.user_message or "")[:120],
+                "started_at": s.started_at,
+            },
+        )
     return {
         "stream_id": s.stream_id,
         "resume_session_id": s.session_id,
@@ -1154,9 +1200,23 @@ async def upload_image(request: Request, pid: Optional[int] = None,
     ct = (request.headers.get("content-type") or "").lower().split(";")[0].strip()
     if ct not in ALLOWED_IMG_MIMES:
         raise HTTPException(415, f"unsupported content-type: {ct}")
-    body = await request.body()
-    if len(body) > MAX_UPLOAD_BYTES:
-        raise HTTPException(413, "image too large (>10MB)")
+    # Pre-flight: trust Content-Length to reject obvious oversize WITHOUT
+    # buffering the body. Avoids OOM/DoS from megabyte-spam attackers.
+    cl_header = request.headers.get("content-length")
+    if cl_header:
+        try:
+            if int(cl_header) > MAX_UPLOAD_BYTES:
+                raise HTTPException(413, "image too large (>10MB)")
+        except ValueError:
+            raise HTTPException(400, "invalid content-length")
+    # Streamed read with running byte cap — protects against chunked/lying
+    # clients that omit or fake Content-Length.
+    buf = bytearray()
+    async for chunk in request.stream():
+        buf.extend(chunk)
+        if len(buf) > MAX_UPLOAD_BYTES:
+            raise HTTPException(413, "image too large (>10MB)")
+    body = bytes(buf)
     if len(body) < 32:
         raise HTTPException(400, "image too small / empty")
     ext = ALLOWED_IMG_MIMES[ct]

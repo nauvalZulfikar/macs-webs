@@ -5,11 +5,148 @@
   --color-bg-elev: #171717;
   --color-bg-elev-2: #262626;
   --color-border: #404040;
+  --color-accent: #10b981;
+  --color-accent-soft: rgba(16, 185, 129, 0.12);
+}
+
+/* Light theme via [data-theme="light"] override on <html>. Tailwind utility
+   classes still resolve to dark hex; we counter-paint with a top-layer
+   filter that inverts neutrals while leaving accent emerald/blue intact. */
+html[data-theme="light"] {
+  filter: invert(0.92) hue-rotate(180deg);
+  background: #f5f5f5;
+}
+html[data-theme="light"] img,
+html[data-theme="light"] video,
+html[data-theme="light"] [data-no-invert],
+html[data-theme="light"] .chat-md pre,
+html[data-theme="light"] .chat-md code,
+html[data-theme="light"] svg,
+html[data-theme="light"] .stream-cursor {
+  filter: invert(1) hue-rotate(180deg);
 }
 
 html, body {
   height: 100%;
   background: var(--color-bg);
+  /* Ambient gradient — barely-there atmospheric glow at top-left + bottom-right */
+  background-image:
+    radial-gradient(ellipse 80% 60% at 0% 0%, rgba(16, 185, 129, 0.04), transparent 60%),
+    radial-gradient(ellipse 70% 50% at 100% 100%, rgba(59, 130, 246, 0.035), transparent 60%);
+  background-attachment: fixed;
+  font-feature-settings: "ss01", "cv11";
+  transition: filter 0.2s ease;
+}
+
+/* Native font stack — better than Inter for OS consistency */
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Custom scrollbar — slim, neutral, only visible on hover */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: rgba(115, 115, 115, 0.15);
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(163, 163, 163, 0.45);
+  background-clip: content-box;
+}
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(115, 115, 115, 0.25) transparent;
+}
+
+/* Selection */
+::selection {
+  background: rgba(16, 185, 129, 0.25);
+  color: #f5f5f5;
+}
+
+/* Respect reduce-motion */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Global focus-visible ring for keyboard users — never visible on mouse click */
+button:focus-visible,
+[role="button"]:focus-visible,
+a:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: 2px solid #10b981;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Tailwind utility line-clamp (used in suggested prompts) */
+.line-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.line-clamp-3 {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Streaming cursor — soft blink, not a hard caret */
+.stream-cursor {
+  display: inline-block;
+  width: 7px;
+  height: 14px;
+  vertical-align: text-bottom;
+  margin-left: 2px;
+  background: linear-gradient(180deg, #10b981 0%, #059669 100%);
+  border-radius: 2px;
+  animation: cursor-pulse 1.1s ease-in-out infinite;
+}
+@keyframes cursor-pulse {
+  0%, 100% { opacity: 0.95; transform: scaleY(1); }
+  50%      { opacity: 0.45; transform: scaleY(0.85); }
+}
+
+/* Subtle entry animation for messages */
+.msg-in {
+  animation: msg-in 0.18s ease-out;
+}
+@keyframes msg-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Page-level fade for chat key change */
+.view-in {
+  animation: view-in 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+@keyframes view-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* kbd consistency */
+kbd {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.78em;
 }
 
 #app {
@@ -107,23 +244,42 @@ input, textarea {
   border: 1px solid #2a2a2a;
 }
 
-/* Code blocks — override base pre rules with chat-tuned styling */
+/* Code blocks — premium dark, with header chip + copy button */
 .chat-md pre {
-  background: #0a0a0a;
+  background: linear-gradient(180deg, #0d0d0d 0%, #080808 100%);
   border: 1px solid #262626;
-  border-radius: 8px;
-  padding: 12px 14px;
+  border-radius: 10px;
+  padding: 0;
   margin: 0;
   font-size: 12.5px;
-  line-height: 1.55;
-  overflow-x: auto;
+  line-height: 1.6;
+  overflow: hidden;
+  position: relative;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
 }
 .chat-md pre code {
   background: transparent;
   color: #e5e5e5;
-  padding: 0;
+  padding: 12px 14px;
+  display: block;
   border: none;
   font-size: inherit;
+  overflow-x: auto;
+}
+.chat-md pre .code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid #1f1f1f;
+  font-size: 10px;
+  color: #737373;
+}
+.chat-md pre .code-lang {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
 }
 
 /* Tables — give them actual visible structure */
@@ -167,3 +323,46 @@ input, textarea {
   border-radius: 6px;
   border: 1px solid #262626;
 }
+
+/* Copy button on code blocks — inside the header chip */
+.chat-md pre .copy-btn {
+  padding: 2px 8px;
+  font-size: 10px;
+  font-family: inherit;
+  color: #a3a3a3;
+  background: transparent;
+  border: 1px solid #2a2a2a;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  opacity: 0;
+}
+.chat-md pre:hover .copy-btn,
+.chat-md pre .copy-btn:focus-visible,
+.chat-md pre .copy-btn.copied {
+  opacity: 1;
+}
+.chat-md pre .copy-btn:hover {
+  color: #f5f5f5;
+  border-color: #525252;
+  background: rgba(255, 255, 255, 0.04);
+}
+.chat-md pre .copy-btn.copied {
+  color: #10b981;
+  border-color: rgba(16, 185, 129, 0.4);
+}
+
+/* highlight.js — atom-one-dark inspired palette tuned for our background */
+.hljs-comment, .hljs-quote { color: #6b7280; font-style: italic; }
+.hljs-keyword, .hljs-selector-tag, .hljs-built_in, .hljs-meta { color: #c084fc; }
+.hljs-string, .hljs-attr, .hljs-template-tag, .hljs-template-variable { color: #86efac; }
+.hljs-number, .hljs-literal { color: #fbbf24; }
+.hljs-title, .hljs-section, .hljs-title.class_, .hljs-title.function_ { color: #fcd34d; }
+.hljs-variable, .hljs-name, .hljs-attribute { color: #f87171; }
+.hljs-type, .hljs-symbol, .hljs-bullet, .hljs-link { color: #60a5fa; }
+.hljs-emphasis { font-style: italic; }
+.hljs-strong { font-weight: 700; }
+.hljs-addition { color: #86efac; background: rgba(134, 239, 172, 0.1); }
+.hljs-deletion { color: #f87171; background: rgba(248, 113, 113, 0.1); }
+.hljs-tag, .hljs-name { color: #f87171; }
+.hljs-doctag { color: #c084fc; }

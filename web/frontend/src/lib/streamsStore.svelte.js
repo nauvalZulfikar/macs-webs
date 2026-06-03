@@ -94,6 +94,14 @@ export async function startStream({
       elevated,
     }),
   });
+  if (resp.status === 409) {
+    const body = await resp.json().catch(() => ({}));
+    const err = new Error("stream_busy");
+    err.code = "stream_busy";
+    err.busyMessage = body.busy_message || "";
+    err.activeStreamId = body.active_stream_id || null;
+    throw err;
+  }
   if (!resp.ok) throw new Error(`start ${resp.status}`);
   const data = await resp.json();
   const stream = {

@@ -30,12 +30,18 @@
 
 <div class="flex min-h-dvh items-center justify-center px-4">
   <form
-    class="w-full max-w-sm rounded-2xl border border-neutral-800 bg-neutral-950 p-6"
+    class="w-full max-w-sm rounded-2xl border border-neutral-800 bg-neutral-950 p-6 shadow-xl"
     onsubmit={submit}
     data-testid="login-form"
   >
-    <h1 class="mb-1 text-lg font-semibold">MACS</h1>
-    <p class="mb-5 text-sm text-neutral-400">Multi-Agent Orchestration System · sign in to continue.</p>
+    <div class="mb-4 flex items-center gap-3">
+      <div class="grid h-10 w-10 place-items-center rounded-xl bg-emerald-600/20 text-xl">🛰️</div>
+      <div>
+        <h1 class="text-lg font-semibold leading-tight">MACS</h1>
+        <p class="text-xs text-neutral-500">Multi-Agent Orchestration</p>
+      </div>
+    </div>
+    <p class="mb-5 text-sm text-neutral-400">Hub buat semua chat per project, mission orchestration, dan watcher otomatis. Sign in untuk lanjut.</p>
     <input
       type="text"
       bind:value={username}
