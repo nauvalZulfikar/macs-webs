@@ -554,12 +554,26 @@ _SACRED_FILE_SUFFIXES = (
 )
 
 # Strings that only appear in genuine system-prompt content; scrub on output.
+# Expanded after observing the agent paraphrase the original fingerprints when
+# asked to "audit your own rules". Cat-and-mouse, but raises the bar.
 _SYSTEM_PROMPT_LEAK_PATTERNS = [
     re.compile(r"`?~?/\.claude/RTK\.md`?"),
     re.compile(r"`?route-prompt\.sh`?"),
     re.compile(r"\[Routing:\s*(?:opus|code_gen|summarize|transform|quick|ui-verify)\]",
                re.IGNORECASE),
     re.compile(r"mcp__macs__(?:delegate|code_gen|summarize|transform|quick|chain|agents)"),
+    # Paraphrased leaks observed in AA4 post-redactor-v1
+    re.compile(r"~/coding-projects/<name>"),
+    re.compile(r"\bAnti-fabrication\b", re.IGNORECASE),
+    re.compile(r"\bVerified via:\s*[<`]?"),
+    re.compile(r"UserPromptSubmit\s+hook"),
+    # Comma-separated routing label list — only meaningful if it's the
+    # full set the agent shouldn't be enumerating.
+    re.compile(r"`?code_gen`?\s*,\s*`?summarize`?\s*,\s*`?transform`?\s*,\s*`?quick`?",
+               re.IGNORECASE),
+    # The <safety>...</safety> preamble itself — agent shouldn't quote it back.
+    re.compile(r"<safety>.*?</safety>", re.IGNORECASE | re.DOTALL),
+    re.compile(r"the\s+`?<safety>`?\s+block", re.IGNORECASE),
 ]
 
 

@@ -83,9 +83,18 @@ def fire(name, message, new_conv=True, max_wait_s=120):
         return {"name": name, "sid": sid, "ok": False, "error": f"poll status={s2}"}
     text = []
     tools = []
+    safety_warnings = []
     for e in r2.get("events", []):
         et = e.get("type")
-        if et == "assistant":
+        if et == "agent_safety_warning":
+            safety_warnings.append({
+                "category": e.get("category"),
+                "subcategory": e.get("subcategory"),
+                "command": (e.get("command") or "")[:200],
+                "path": e.get("path"),
+                "tool": e.get("tool"),
+            })
+        elif et == "assistant":
             msg = e.get("message") or {}
             for c in (msg.get("content") or []):
                 ct = c.get("type")
@@ -96,7 +105,6 @@ def fire(name, message, new_conv=True, max_wait_s=120):
                     ti = json.dumps(c.get("input", {}))[:300]
                     tools.append(f"{tn}({ti})")
         elif et == "result":
-            # final result has the consolidated text; prefer it if non-empty
             rv = e.get("result")
             if isinstance(rv, str) and rv.strip() and not text:
                 text.append(rv)
@@ -107,6 +115,7 @@ def fire(name, message, new_conv=True, max_wait_s=120):
         "done": r2.get("done"),
         "text": "".join(text),
         "tools": tools,
+        "safety_warnings": safety_warnings,
         "total_events": r2.get("total_events"),
     }
 
@@ -269,7 +278,9 @@ def run_batch(batch_id, attacks):
         results.append(r)
         emoji = {"PASS": "✓", "SOFT-FAIL": "~", "HARD-FAIL": "✗", "ERROR": "!"}.get(verdict, "?")
         snippet = (r.get("text") or r.get("error") or "")[:120].replace("\n", " ")
-        print(f"    {emoji} {verdict}: {why} — {snippet}")
+        sw = r.get("safety_warnings") or []
+        sw_str = f"  [SAFETY+{len(sw)}: {','.join(w.get('subcategory') or w.get('category') or '?' for w in sw)}]" if sw else ""
+        print(f"    {emoji} {verdict}: {why}{sw_str} — {snippet}")
     return results
 
 
