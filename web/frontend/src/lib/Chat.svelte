@@ -354,6 +354,33 @@ let statePanelOpen = $state(false)
       }
       return
     }
+    if (evt.type === 'agent_safety_warning') {
+      // Backend-emitted: dangerous bash, sacred file write, or system-prompt
+      // leak redaction. Surface inline in the chat stream + push toast.
+      const w = {
+        role: 'safety_warning',
+        category: evt.category || 'unknown',
+        subcategory: evt.subcategory || null,
+        command: evt.command || null,
+        path: evt.path || null,
+        tool: evt.tool || null,
+        ts: Date.now(),
+      }
+      messages = [...messages, w]
+      const titleMap = {
+        dangerous_bash: 'Bash command flagged',
+        sacred_file_write: 'Sensitive file write',
+        system_prompt_leak_redacted: 'System prompt leak redacted',
+      }
+      const detail = w.path || w.command || w.subcategory || w.category
+      toast({
+        kind: w.category === 'system_prompt_leak_redacted' ? 'info' : 'warn',
+        title: titleMap[w.category] || 'Agent safety warning',
+        body: String(detail).slice(0, 140),
+        duration: 6000,
+      })
+      return
+    }
     if (evt.type === 'error') {
       error = evt.error || 'unknown error'
       toast({ kind: 'error', title: 'Stream error', body: String(error).slice(0, 120), duration: 5000 })
@@ -592,6 +619,9 @@ let statePanelOpen = $state(false)
         lines.push(m.text || '')
       } else if (m.role === 'system_note') {
         lines.push(`\n> ↻ ${m.text}\n`)
+      } else if (m.role === 'safety_warning') {
+        const detail = m.path || m.command || m.subcategory || ''
+        lines.push(`\n> ⚠️ MACS safety: \`${m.category}\`${detail ? ` — ${detail}` : ''}\n`)
       }
     }
     const safeName = (projectDisplayName || 'chat').replace(/[^a-z0-9-_]/gi, '_')
@@ -991,10 +1021,39 @@ let statePanelOpen = $state(false)
       {#each messages as m, i (i)}
         {@const isLast = i === messages.length - 1}
         {@const isLastUser = i === lastUserIdx}
-        <li class="msg-in flex {m.role === 'user' ? 'justify-end' : m.role === 'system_note' ? 'justify-center' : 'justify-start'}">
+        <li class="msg-in flex {m.role === 'user' ? 'justify-end' : (m.role === 'system_note' || m.role === 'safety_warning') ? 'justify-center' : 'justify-start'}">
           {#if m.role === 'system_note'}
             <div class="rounded-full border border-amber-500/30 bg-amber-500/10 px-3 py-1 text-[11px] text-amber-300">
               ↻ {m.text}
+            </div>
+          {:else if m.role === 'safety_warning'}
+            {@const palette = m.category === 'system_prompt_leak_redacted'
+              ? { ring: 'border-sky-500/40 bg-sky-500/10', text: 'text-sky-200', dot: 'bg-sky-400', icon: '🛡️' }
+              : m.category === 'sacred_file_write'
+              ? { ring: 'border-amber-500/40 bg-amber-500/10', text: 'text-amber-200', dot: 'bg-amber-400', icon: '📝' }
+              : { ring: 'border-red-500/40 bg-red-500/10', text: 'text-red-200', dot: 'bg-red-400', icon: '⚠️' }}
+            <div class="max-w-[88%] rounded-2xl border {palette.ring} px-3.5 py-2 text-[12px] {palette.text} shadow-sm" data-testid="safety-warning-{m.category}">
+              <div class="flex items-start gap-2">
+                <span class="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-black/30 text-[11px]">{palette.icon}</span>
+                <div class="min-w-0 flex-1">
+                  <div class="flex items-center gap-1.5 font-semibold uppercase tracking-wide text-[10px]">
+                    <span class="inline-block h-1.5 w-1.5 rounded-full {palette.dot}"></span>
+                    {#if m.category === 'dangerous_bash'}MACS safety · dangerous bash blocked
+                    {:else if m.category === 'sacred_file_write'}MACS safety · sensitive file write
+                    {:else if m.category === 'system_prompt_leak_redacted'}MACS safety · system prompt leak redacted
+                    {:else}MACS safety · {m.category}{/if}
+                  </div>
+                  {#if m.subcategory}
+                    <div class="mt-0.5 text-[11px] opacity-80">pattern: <code class="rounded bg-black/30 px-1">{m.subcategory}</code></div>
+                  {/if}
+                  {#if m.path}
+                    <div class="mt-0.5 text-[11px] opacity-80">file: <code class="rounded bg-black/30 px-1 break-all">{m.path}</code>{m.tool ? ` · via ${m.tool}` : ''}</div>
+                  {/if}
+                  {#if m.command}
+                    <div class="mt-0.5 truncate text-[11px] opacity-80" title={m.command}>cmd: <code class="rounded bg-black/30 px-1">{m.command}</code></div>
+                  {/if}
+                </div>
+              </div>
             </div>
           {:else}
             <div class="max-w-[88%] rounded-2xl px-3.5 py-2.5 text-sm shadow-sm {m.role === 'user' ? 'bg-gradient-to-br from-blue-600 to-blue-700 text-white ring-1 ring-blue-500/30' : 'border border-neutral-800 bg-neutral-900/80 backdrop-blur-sm'}">
