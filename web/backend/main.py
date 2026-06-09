@@ -45,6 +45,7 @@ from db import (
     Mission, MissionAgent, StreamSnapshot, Watcher, WatcherFire,
     MissionScratchpad, Checkpoint, StreamCost, ProjectTask,
 )
+from sqlalchemy import text
 import git_utils
 import browser_runs
 from watcher_engine import engine as watcher_engine
@@ -1086,7 +1087,24 @@ async def me(request: Request):
 
 @app.get("/api/health")
 def health():
-    return {"ok": True}
+    """Deep health check — verifies DB readable, returns 503 if anything failed.
+    Probed every 5 min by ~/bin/macs-healthcheck.sh, which pings NTFY on 5xx.
+    Note: deliberately does NOT check Ollama (it's optional + slow to probe)."""
+    out = {"ok": True, "db": False}
+    try:
+        with engine.connect() as conn:
+            r = conn.execute(text("SELECT 1")).fetchone()
+            out["db"] = bool(r)
+    except Exception as e:
+        out["ok"] = False
+        out["db_error"] = str(e)[:200]
+    try:
+        out["streams_active"] = sum(1 for s in _streams.values() if not s.done)
+    except Exception:
+        out["streams_active"] = -1
+    if not out["ok"]:
+        return JSONResponse(content=out, status_code=503)
+    return out
 
 
 # ─── Projects/sessions endpoints ──────────────────────────────────────────
