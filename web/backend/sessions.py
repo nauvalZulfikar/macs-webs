@@ -15,6 +15,7 @@ PROJECTS_ROOT = Path.home() / ".claude" / "projects"
 _PREAMBLE_STRIP = re.compile(
     r"^\s*(?:<safety>.*?</safety>\s*"
     r"|<responsiveness>.*?</responsiveness>\s*"
+    r"|<state-contract>.*?</state-contract>\s*"
     r"|<system-context>.*?</system-context>\s*)+",
     re.DOTALL | re.IGNORECASE,
 )

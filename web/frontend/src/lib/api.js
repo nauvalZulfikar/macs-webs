@@ -99,3 +99,39 @@ export async function listActiveStreams(projectId) {
   if (!r.ok) throw new Error(`active streams ${r.status}`);
   return r.json();
 }
+
+/* ── Project Tasks (Phase 5) ───────────────────────────────────────────────── */
+
+export async function listProjectTasks(projectId, status = "all") {
+  const r = await fetch(`/api/projects/${projectId}/tasks?status=${encodeURIComponent(status)}`);
+  if (!r.ok) throw new Error(`tasks ${r.status}`);
+  return r.json();
+}
+
+export async function createProjectTask(projectId, { title, description = null, priority = 0 }) {
+  const r = await fetch(`/api/projects/${projectId}/tasks`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title, description, priority }),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data?.detail || `create task ${r.status}`);
+  return data;
+}
+
+export async function updateProjectTask(projectId, taskId, patch) {
+  const r = await fetch(`/api/projects/${projectId}/tasks/${taskId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data?.detail || `update task ${r.status}`);
+  return data;
+}
+
+export async function deleteProjectTask(projectId, taskId) {
+  const r = await fetch(`/api/projects/${projectId}/tasks/${taskId}`, { method: "DELETE" });
+  if (!r.ok) throw new Error(`delete task ${r.status}`);
+  return r.json();
+}

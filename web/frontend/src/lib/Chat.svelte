@@ -1,5 +1,6 @@
 <script>
-  import { listSessions, loadSession, switchSession } from './api.js'
+  import { listSessions, loadSession, switchSession,
+    listProjectTasks, createProjectTask, updateProjectTask, deleteProjectTask } from './api.js'
   import {
     streams as streamsStore,
     startStream,
@@ -127,6 +128,12 @@
   let historyOpen = $state(false)
   let history = $state([])
   let historyLoading = $state(false)
+  // Project tasks (Phase 5)
+  let tasksOpen = $state(false)
+  let tasks = $state([])
+  let tasksLoading = $state(false)
+  let newTaskTitle = $state('')
+  let taskFilter = $state('open')  // 'open' | 'all' | 'done'
   let loadingMessages = $state(true)
   let approval = $state(null)
   let scroller
@@ -725,6 +732,47 @@ let statePanelOpen = $state(false)
     finally { historyLoading = false }
   }
 
+  async function openTasks() {
+    tasksOpen = true
+    tasksLoading = true
+    try {
+      const filter = taskFilter === 'open' ? 'open,in_progress' : taskFilter
+      tasks = await listProjectTasks(project.id, filter)
+    } catch (e) { error = e.message }
+    finally { tasksLoading = false }
+  }
+
+  async function reloadTasks() {
+    const filter = taskFilter === 'open' ? 'open,in_progress' : taskFilter
+    try { tasks = await listProjectTasks(project.id, filter) }
+    catch (e) { error = e.message }
+  }
+
+  async function addTask() {
+    const title = (newTaskTitle || '').trim()
+    if (!title) return
+    try {
+      await createProjectTask(project.id, { title })
+      newTaskTitle = ''
+      await reloadTasks()
+      toast({ kind: 'success', title: 'Task added', body: title.slice(0, 80), duration: 3000 })
+    } catch (e) { error = e.message }
+  }
+
+  async function setTaskStatus(t, status) {
+    try {
+      await updateProjectTask(project.id, t.id, { status })
+      await reloadTasks()
+    } catch (e) { error = e.message }
+  }
+
+  async function removeTask(t) {
+    try {
+      await deleteProjectTask(project.id, t.id)
+      await reloadTasks()
+    } catch (e) { error = e.message }
+  }
+
   async function pickSession(sid) {
     if (pending) return
     historyOpen = false
@@ -966,6 +1014,12 @@ let statePanelOpen = $state(false)
         </div>
       {/if}
     </div>
+    <button
+      class="rounded-md px-2 py-1 text-xs text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100"
+      onclick={openTasks}
+      data-testid="tasks-btn"
+      title="Project tasks (persistent backlog)"
+    >Tasks</button>
     <button
       class="rounded-md px-2 py-1 text-xs text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100 disabled:opacity-50"
       onclick={openHistory}
@@ -1447,6 +1501,83 @@ let statePanelOpen = $state(false)
   open={statePanelOpen}
   onClose={() => (statePanelOpen = false)}
 />
+
+<!-- tasks drawer (Phase 5 — persistent project backlog) -->
+{#if tasksOpen}
+  <div class="fixed inset-0 z-40 bg-black/60" onclick={() => (tasksOpen = false)} role="presentation" data-testid="tasks-overlay"></div>
+  <aside class="fixed inset-y-0 right-0 z-50 flex w-[min(460px,92vw)] flex-col border-l border-neutral-800 bg-neutral-950 shadow-xl" data-testid="tasks-drawer">
+    <div class="flex items-center justify-between border-b border-neutral-800 px-4 py-3">
+      <div class="font-medium">Tasks · {project.name}</div>
+      <button class="text-neutral-400 hover:text-neutral-100" onclick={() => (tasksOpen = false)}>✕</button>
+    </div>
+    <!-- compose -->
+    <div class="border-b border-neutral-800 px-3 py-3">
+      <div class="flex gap-2">
+        <input
+          type="text"
+          bind:value={newTaskTitle}
+          onkeydown={(e) => { if (e.key === 'Enter' && newTaskTitle.trim()) addTask() }}
+          placeholder="New task title…"
+          class="flex-1 rounded-md border border-neutral-800 bg-neutral-900 px-2.5 py-1.5 text-sm text-neutral-100 placeholder:text-neutral-600 focus:border-blue-500/60 focus:outline-none"
+          data-testid="new-task-input"
+        />
+        <button
+          onclick={addTask}
+          disabled={!newTaskTitle.trim()}
+          class="rounded-md bg-blue-600 px-3 py-1.5 text-xs text-white hover:bg-blue-500 disabled:opacity-50"
+          data-testid="add-task-btn"
+        >Add</button>
+      </div>
+      <div class="mt-2 flex gap-1.5 text-[11px]">
+        {#each ['open','all','done'] as f}
+          <button
+            class="rounded px-2 py-0.5 {taskFilter === f ? 'bg-neutral-800 text-neutral-100' : 'text-neutral-500 hover:bg-neutral-900'}"
+            onclick={() => { taskFilter = f; reloadTasks() }}
+          >{f}</button>
+        {/each}
+      </div>
+    </div>
+    <!-- list -->
+    <div class="flex-1 overflow-y-auto p-3">
+      {#if tasksLoading}
+        <div class="text-sm text-neutral-500">Loading…</div>
+      {:else if tasks.length === 0}
+        <div class="text-sm text-neutral-500">No {taskFilter !== 'all' ? taskFilter : ''} tasks. Add one above.</div>
+      {:else}
+        <ul class="space-y-2">
+          {#each tasks as t (t.id)}
+            <li class="rounded-lg border border-neutral-800 bg-neutral-900 p-2.5" data-testid="task-{t.id}">
+              <div class="flex items-start gap-2">
+                <button
+                  class="mt-0.5 grid h-4 w-4 shrink-0 place-items-center rounded border {t.status === 'done' ? 'border-green-500/60 bg-green-500/20 text-green-300' : 'border-neutral-700 hover:border-neutral-500'}"
+                  onclick={() => setTaskStatus(t, t.status === 'done' ? 'open' : 'done')}
+                  aria-label="Toggle done"
+                  title="Toggle done"
+                >{t.status === 'done' ? '✓' : ''}</button>
+                <div class="min-w-0 flex-1">
+                  <div class="text-sm {t.status === 'done' ? 'text-neutral-500 line-through' : 'text-neutral-100'}">{t.title}</div>
+                  {#if t.description}
+                    <div class="mt-0.5 text-xs text-neutral-500">{t.description}</div>
+                  {/if}
+                  <div class="mt-1 flex items-center gap-2 text-[10px] text-neutral-500">
+                    <span class="rounded bg-neutral-800 px-1.5 py-0.5">{t.status}</span>
+                    {#if t.priority > 0}<span class="rounded bg-amber-900/50 px-1.5 py-0.5 text-amber-300">P{t.priority}</span>{/if}
+                  </div>
+                </div>
+                <div class="flex shrink-0 flex-col gap-1">
+                  {#if t.status !== 'in_progress' && t.status !== 'done'}
+                    <button class="rounded px-1.5 py-0.5 text-[10px] text-blue-400 hover:bg-neutral-800" onclick={() => setTaskStatus(t, 'in_progress')}>start</button>
+                  {/if}
+                  <button class="rounded px-1.5 py-0.5 text-[10px] text-neutral-500 hover:bg-red-900/30 hover:text-red-300" onclick={() => removeTask(t)} title="Delete">✕</button>
+                </div>
+              </div>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    </div>
+  </aside>
+{/if}
 
 <!-- history drawer -->
 {#if historyOpen}

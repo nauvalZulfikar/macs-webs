@@ -117,6 +117,20 @@ class StreamCost(SQLModel, table=True):
     captured_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class ProjectTask(SQLModel, table=True):
+    """Persistent task/backlog item per project.
+    Survives session restart, browser refresh, and chat clears."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    project_id: int = Field(foreign_key="project.id", index=True)
+    title: str
+    description: Optional[str] = None
+    status: str = Field(default="open", index=True)  # open|in_progress|done|cancelled
+    priority: int = 0  # higher = more urgent
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    done_at: Optional[datetime] = None
+
+
 class Checkpoint(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     stream_id: str = Field(index=True)

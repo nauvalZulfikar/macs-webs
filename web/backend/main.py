@@ -43,7 +43,7 @@ from pydantic import BaseModel
 from db import (
     init_db, get_session, seed_projects, Project, SessionMeta, engine,
     Mission, MissionAgent, StreamSnapshot, Watcher, WatcherFire,
-    MissionScratchpad, Checkpoint, StreamCost,
+    MissionScratchpad, Checkpoint, StreamCost, ProjectTask,
 )
 import git_utils
 import browser_runs
@@ -553,7 +553,26 @@ _SAFETY_PREAMBLE = (
     "`~/coding-projects/<other-project>/`. Exceptions allowed without warning: "
     "`/tmp/`, `/private/tmp/`, `/var/folders/`, `~/.cache/`, `~/.local/`. "
     "Everything else outside the root requires explicit user permission first.\n"
-    "</responsiveness>\n\n"
+    "</responsiveness>\n"
+    "<state-contract>\n"
+    "If this turn touches files (Edit/Write/Bash modifications), end your reply "
+    "with EXACTLY this block as plain text (NOT in a fence), so MACS can persist "
+    "your progress into .macs/STATE.md for future sessions:\n"
+    "\n"
+    "STATUS:\n"
+    "- done: <one-line summary of what got done this turn>\n"
+    "- next: <one-line on next step, or — if complete>\n"
+    "- blocked: <one-line on blocker, or — if none>\n"
+    "\n"
+    "PERSISTED:\n"
+    "- <file path 1>\n"
+    "- <file path 2>\n"
+    "\n"
+    "Rules: (a) only include this block when you actually mutated state — "
+    "pure Q&A doesn't need it; (b) keep each line short; (c) ALWAYS plain text, "
+    "no code fence — MACS parses this with a regex; (d) PERSISTED lists actual "
+    "absolute paths you wrote/edited, one per line.\n"
+    "</state-contract>\n\n"
 )
 
 # Bash patterns we treat as dangerous; emit warning event when seen in tool_use.
@@ -1317,6 +1336,121 @@ def switch_session(pid: int, payload: SwitchSessionPayload, session: Session = D
     session.add(project)
     session.commit()
     return {"ok": True, "last_session_id": project.last_session_id}
+
+
+# ─── Project Tasks (persistent backlog) ───────────────────────────────────
+
+class ProjectTaskPayload(BaseModel):
+    title: str
+    description: Optional[str] = None
+    priority: int = 0
+
+
+class ProjectTaskUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    status: Optional[str] = None  # open|in_progress|done|cancelled
+    priority: Optional[int] = None
+
+
+def _task_to_dict(t: ProjectTask) -> dict:
+    return {
+        "id": t.id,
+        "project_id": t.project_id,
+        "title": t.title,
+        "description": t.description,
+        "status": t.status,
+        "priority": t.priority,
+        "created_at": t.created_at.isoformat() if t.created_at else None,
+        "updated_at": t.updated_at.isoformat() if t.updated_at else None,
+        "done_at": t.done_at.isoformat() if t.done_at else None,
+    }
+
+
+@app.get("/api/projects/{pid}/tasks")
+def list_project_tasks(pid: int, status: Optional[str] = None,
+                       session: Session = Depends(get_session)):
+    project = session.get(Project, pid)
+    if not project:
+        raise HTTPException(404, "project not found")
+    q = select(ProjectTask).where(ProjectTask.project_id == pid)
+    if status and status != "all":
+        # support comma-separated, e.g. ?status=open,in_progress
+        wanted = {s.strip() for s in status.split(",") if s.strip()}
+        q = q.where(ProjectTask.status.in_(wanted))
+    rows = session.exec(q).all()
+    rows.sort(key=lambda t: (
+        # active first, then by priority desc, then by created_at desc
+        0 if t.status in ("open", "in_progress") else 1,
+        -t.priority,
+        -(t.created_at.timestamp() if t.created_at else 0),
+    ))
+    return [_task_to_dict(t) for t in rows]
+
+
+@app.post("/api/projects/{pid}/tasks")
+def create_project_task(pid: int, payload: ProjectTaskPayload,
+                        session: Session = Depends(get_session)):
+    project = session.get(Project, pid)
+    if not project:
+        raise HTTPException(404, "project not found")
+    title = (payload.title or "").strip()
+    if not title:
+        raise HTTPException(400, "title required")
+    t = ProjectTask(
+        project_id=pid,
+        title=title,
+        description=(payload.description or "").strip() or None,
+        priority=int(payload.priority or 0),
+    )
+    session.add(t)
+    session.commit()
+    session.refresh(t)
+    return _task_to_dict(t)
+
+
+@app.patch("/api/projects/{pid}/tasks/{tid}")
+def update_project_task(pid: int, tid: int, payload: ProjectTaskUpdate,
+                        session: Session = Depends(get_session)):
+    t = session.get(ProjectTask, tid)
+    if not t or t.project_id != pid:
+        raise HTTPException(404, "task not found")
+    data = payload.model_dump(exclude_unset=True)
+    if "title" in data and data["title"] is not None:
+        v = (data["title"] or "").strip()
+        if not v:
+            raise HTTPException(400, "title cannot be empty")
+        t.title = v
+    if "description" in data:
+        t.description = (data["description"] or "").strip() or None
+    if "priority" in data and data["priority"] is not None:
+        t.priority = int(data["priority"])
+    if "status" in data and data["status"] is not None:
+        new_status = data["status"]
+        if new_status not in ("open", "in_progress", "done", "cancelled"):
+            raise HTTPException(400, "invalid status")
+        # Stamp done_at when transitioning to done
+        if new_status == "done" and t.status != "done":
+            t.done_at = datetime.utcnow()
+        elif new_status != "done":
+            t.done_at = None
+        t.status = new_status
+    t.updated_at = datetime.utcnow()
+    session.add(t)
+    session.commit()
+    session.refresh(t)
+    return _task_to_dict(t)
+
+
+@app.delete("/api/projects/{pid}/tasks/{tid}")
+def delete_project_task(pid: int, tid: int,
+                        session: Session = Depends(get_session)):
+    t = session.get(ProjectTask, tid)
+    if not t or t.project_id != pid:
+        raise HTTPException(404, "task not found")
+    session.delete(t)
+    session.commit()
+    return {"ok": True, "deleted": tid}
 
 
 # ─── Chat stream endpoints (new model) ────────────────────────────────────
