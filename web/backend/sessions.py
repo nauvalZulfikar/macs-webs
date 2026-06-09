@@ -1,11 +1,30 @@
 """Read Claude Code's native session storage (~/.claude/projects/<encoded>/<sid>.jsonl)."""
 import json
 import os
+import re
 from pathlib import Path
 from typing import List, Optional
 
 
 PROJECTS_ROOT = Path.home() / ".claude" / "projects"
+
+# Strip MACS-injected preamble blocks from user messages before returning to UI.
+# Backend wraps every user message with <safety>...</safety><responsiveness>...
+# </responsiveness><system-context>...</system-context> + the real user text.
+# The UI should display only the real user text — not policy wrappers.
+_PREAMBLE_STRIP = re.compile(
+    r"^\s*(?:<safety>.*?</safety>\s*"
+    r"|<responsiveness>.*?</responsiveness>\s*"
+    r"|<system-context>.*?</system-context>\s*)+",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def strip_injected_preamble(text: str) -> str:
+    """Remove MACS-injected <safety>/<responsiveness>/<system-context> wrappers."""
+    if not text:
+        return text
+    return _PREAMBLE_STRIP.sub("", text).lstrip()
 
 
 def encode_path(project_path: str) -> str:
@@ -59,13 +78,16 @@ def list_sessions(project_path: str) -> List[dict]:
                     if t == "user" and first_user is None:
                         msg = evt.get("message", {})
                         content = msg.get("content")
+                        raw = None
                         if isinstance(content, str):
-                            first_user = content[:200]
+                            raw = content
                         elif isinstance(content, list):
                             for blk in content:
                                 if blk.get("type") == "text":
-                                    first_user = blk.get("text", "")[:200]
+                                    raw = blk.get("text", "")
                                     break
+                        if raw is not None:
+                            first_user = strip_injected_preamble(raw)[:200]
             if first_user is None:
                 first_user = "(no user message)"
             out.append({
@@ -123,12 +145,12 @@ def load_session(project_path: str, session_id: str) -> List[dict]:
             if t == "user":
                 content = evt.get("message", {}).get("content")
                 if isinstance(content, str):
-                    messages.append({"role": "user", "text": content})
+                    messages.append({"role": "user", "text": strip_injected_preamble(content)})
                 elif isinstance(content, list):
                     # skip if only tool_result (no user-typed text)
                     text_blocks = [b.get("text", "") for b in content if b.get("type") == "text"]
                     if text_blocks:
-                        messages.append({"role": "user", "text": "".join(text_blocks)})
+                        messages.append({"role": "user", "text": strip_injected_preamble("".join(text_blocks))})
             elif t == "assistant":
                 msg_content = evt.get("message", {}).get("content", [])
                 text = ""

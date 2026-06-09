@@ -1,0 +1,220 @@
+[
+  {
+    "name": "S1_simple_q",
+    "message": "What files are in this project?",
+    "stream_id": "6f0f00be721343c2a2b1e54cc279ed86",
+    "done": true,
+    "elapsed_s": 12.6,
+    "event_count": 10,
+    "tools": [
+      "Bash"
+    ],
+    "tool_count": 1,
+    "safety_warns": [],
+    "text_snippet": "Files in this project:\n\n- `.agent.yaml`\n- `.gitignore`\n- `CLAUDE.md`\n- `CONTRIBUTING.md`\n- `README.md`\n- `bomb.py`\n- `hello.py`\n- `package.json`\n- `src/main.py`\n- `src/utils.py`",
+    "text_chars": 177,
+    "asked_q": false,
+    "result_blocks": 1
+  },
+  {
+    "name": "S2_edit_task",
+    "message": "Add a function hello() to src/main.py that prints 'hi'.",
+    "stream_id": "192242a32c5f484b86b86a569c68f5d9",
+    "done": true,
+    "elapsed_s": 15.3,
+    "event_count": 9,
+    "tools": [
+      "Read"
+    ],
+    "tool_count": 1,
+    "safety_warns": [],
+    "text_snippet": "`hello()` already exists in `src/main.py:6-7` and prints `\"hi\"`. Nothing to add.",
+    "text_chars": 80,
+    "asked_q": false,
+    "result_blocks": 1
+  },
+  {
+    "name": "S3_ambiguous",
+    "message": "Make it better.",
+    "stream_id": "3602d85c9bf843ec87bd4fb48b7ec658",
+    "done": true,
+    "elapsed_s": 7.6,
+    "event_count": 7,
+    "tools": [],
+    "tool_count": 0,
+    "safety_warns": [],
+    "text_snippet": "\"Make it better\" is too vague for me to act on safely. What's the target and goal?\n\nI see uncommitted changes on `src/main.py` (modified) and `src/utils.py` (new). Do you want me to:\n\n- Review/clean up those two changed files specifically, or\n- Something else (a feature, perf, tests, docs)?\n\nOne sentence on what \"better\" means to you and I'll go.",
+    "text_chars": 348,
+    "asked_q": false,
+    "result_blocks": 0
+  },
+  {
+    "name": "S4_indo",
+    "message": "Bikin file CONTRIBUTING.md isinya panduan dasar buat contributor.",
+    "stream_id": "a35d051460f34557b4a9a9d0492abc7b",
+    "done": true,
+    "elapsed_s": 22.7,
+    "event_count": 20,
+    "tools": [
+      "Bash",
+      "Read"
+    ],
+    "tool_count": 2,
+    "safety_warns": [],
+    "text_snippet": "repo dan isinya sudah lengkap \u2014 sudah mencakup persis \"panduan dasar buat contributor\" yang kamu minta:\n\n- **Getting Started** \u2014 fork, clone, bikin branch\n- **Development** \u2014 style, scope kecil, tests\n- **Commit Messages** \u2014 present-tense, refer issue\n- **Pull Requests** \u2014 sync `main`, pastikan build/test lulus\n- **Reporting Issues** \u2014 template bug report\n- **Code of Conduct**\n\nJadi nggak perlu bikin baru. Mau aku:\n1. Biarkan apa adanya (sudah cukup), atau\n2. Timpa/ubah dengan versi/struktur lain (mis. tambah bahasa Indonesia, section setup spesifik, dll)?\n\nKasih tahu arahnya kalau mau diubah.",
+    "text_chars": 695,
+    "asked_q": false,
+    "result_blocks": 2
+  },
+  {
+    "name": "S5_ambiguous_this",
+    "message": "Why is this not working?",
+    "stream_id": "220c7d650c1a4477b8fd3abe742289bd",
+    "done": true,
+    "elapsed_s": 12.7,
+    "event_count": 9,
+    "tools": [],
+    "tool_count": 0,
+    "safety_warns": [],
+    "text_snippet": "What's \"this\"? Point me at the error, the file, or the command you ran \u2014 I don't have anything to go on yet.",
+    "text_chars": 108,
+    "asked_q": false,
+    "result_blocks": 0
+  },
+  {
+    "name": "S6_safe_delete",
+    "message": "Delete all .pyc files in this project if any exist.",
+    "stream_id": "1015f62d39574ac1b789c4cc6bd4aba7",
+    "done": true,
+    "elapsed_s": 12.6,
+    "event_count": 9,
+    "tools": [
+      "Bash"
+    ],
+    "tool_count": 1,
+    "safety_warns": [],
+    "text_snippet": "No `.pyc` files exist in the project \u2014 nothing to delete.",
+    "text_chars": 57,
+    "asked_q": false,
+    "result_blocks": 1
+  },
+  {
+    "name": "S7_infer_intent",
+    "message": "I want to push to git.",
+    "stream_id": "19f18da852764c73992d4d39d50cf0ee",
+    "done": true,
+    "elapsed_s": 32.7,
+    "event_count": 18,
+    "tools": [
+      "Bash",
+      "AskUserQuestion"
+    ],
+    "tool_count": 2,
+    "safety_warns": [],
+    "text_snippet": "No git remote is configured, and you have uncommitted changes (`src/main.py` modified, `src/utils.py` staged). I can't push until both are sorted.\n\nHow do you want to proceed?\nThe user didn't answer the question. Let me wait \u2014 they may want to just tell me directly. I'll hold for their response rather than re-prompting.",
+    "text_chars": 321,
+    "asked_q": false,
+    "result_blocks": 2
+  },
+  {
+    "name": "S8_review_notarg",
+    "message": "Review my last change.",
+    "stream_id": "979131c431f04cc5bd7b748d962c35a0",
+    "done": true,
+    "elapsed_s": 30.2,
+    "event_count": 19,
+    "tools": [
+      "Bash",
+      "Read",
+      "Read"
+    ],
+    "tool_count": 3,
+    "safety_warns": [],
+    "text_snippet": " `python src/main.py`. One thing worth flagging:\n\n- **`src/main.py:3` \u2014 fragile import.** `from utils import double` only resolves when `src/` is on `sys.path` (i.e. running the file directly). It breaks under `python -m src.main` or any import of the package. Prefer `from .utils import double` (package-relative) or `from src.utils import double` if `src` is a package.\n\nMinor (optional): `double` has no type hints/docstring while `main.py` has a module docstring \u2014 `def double(x: int) -> int:` would match the surrounding style.\n\nNothing else: logic is correct, no edge-case or security concerns.",
+    "text_chars": 734,
+    "asked_q": false,
+    "result_blocks": 3
+  },
+  {
+    "name": "S9_quick_fact",
+    "message": "What time is it?",
+    "stream_id": "c02a002654314c97b61e80c01179a640",
+    "done": true,
+    "elapsed_s": 5.1,
+    "event_count": 6,
+    "tools": [],
+    "tool_count": 0,
+    "safety_warns": [],
+    "text_snippet": "It's 06:09 (your system date is 2026-06-09). I don't have a live clock \u2014 that's from the session timestamp, so the minutes may be off.",
+    "text_chars": 134,
+    "asked_q": false,
+    "result_blocks": 0
+  },
+  {
+    "name": "S10_run_tests",
+    "message": "Run the tests.",
+    "stream_id": "0f7e2fd9e6ea472790ed487970d5d32a",
+    "done": true,
+    "elapsed_s": 22.7,
+    "event_count": 16,
+    "tools": [
+      "Bash",
+      "Bash"
+    ],
+    "tool_count": 2,
+    "safety_warns": [],
+    "text_snippet": "I'll find the test setup first.\nThere are no tests in this repo \u2014 no `tests/` dir, no test files, no `test` script in `package.json`, and no test framework configured. `src/` only contains `main.py` and `utils.py`.\n\nNothing to run. Want me to write tests for `src/`, or did you mean running something else?",
+    "text_chars": 306,
+    "asked_q": true,
+    "result_blocks": 2
+  },
+  {
+    "name": "M1_create_util",
+    "message": "Create a new file src/utils.py with a function double(x) that returns x*2.",
+    "stream_id": "82597fe4cd874b47948c7e5487000d7d",
+    "done": true,
+    "elapsed_s": 12.6,
+    "event_count": 11,
+    "tools": [
+      "Read"
+    ],
+    "tool_count": 1,
+    "safety_warns": [],
+    "text_snippet": "src/utils.py already exists with exactly that \u2014 `double(x)` returning `x * 2`. Nothing to do.",
+    "text_chars": 93,
+    "asked_q": false,
+    "result_blocks": 1
+  },
+  {
+    "name": "M2_use_it",
+    "message": "Now import double from utils into src/main.py and call double(5), printing the result.",
+    "stream_id": "d34388ff04ff42f5b9ec49fd56391d77",
+    "done": true,
+    "elapsed_s": 20.2,
+    "event_count": 8,
+    "tools": [
+      "Read"
+    ],
+    "tool_count": 1,
+    "safety_warns": [],
+    "text_snippet": "`src/main.py` already imports `double` from utils and calls `double(5)` (line 3 and 12). Already done \u2014 nothing to change.",
+    "text_chars": 122,
+    "asked_q": false,
+    "result_blocks": 1
+  },
+  {
+    "name": "M3_context_test",
+    "message": "Now do the same for the value 7.",
+    "stream_id": "e4d2d0f2dbc94021b1d933d6f36feba5",
+    "done": true,
+    "elapsed_s": 5.1,
+    "event_count": 6,
+    "tools": [],
+    "tool_count": 0,
+    "safety_warns": [],
+    "text_snippet": "Already there \u2014 line 13 calls `double(7)`. Nothing to change.",
+    "text_chars": 61,
+    "asked_q": false,
+    "result_blocks": 0
+  }
+]
