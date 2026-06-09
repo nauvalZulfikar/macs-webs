@@ -547,6 +547,12 @@ _SAFETY_PREAMBLE = (
     "4. DON'T OVER-EXPLORE FOR SIMPLE REQUESTS: 'I want to push to git' should "
     "first check `git remote -v` and `git status`, then either push or ask one "
     "question — not run 7+ inspection commands.\n"
+    "5. STAY INSIDE THE PROJECT ROOT: all files you create or edit MUST live "
+    "under the project root you're working in (the path injected via STATE/CWD). "
+    "Do NOT Write/Edit at paths like `~/random.py`, `/Users/<u>/Desktop/`, or "
+    "`~/coding-projects/<other-project>/`. Exceptions allowed without warning: "
+    "`/tmp/`, `/private/tmp/`, `/var/folders/`, `~/.cache/`, `~/.local/`. "
+    "Everything else outside the root requires explicit user permission first.\n"
     "</responsiveness>\n\n"
 )
 
@@ -597,8 +603,49 @@ _SYSTEM_PROMPT_LEAK_PATTERNS = [
 ]
 
 
-def _scan_tool_use_for_danger(block: dict) -> list[dict]:
-    """Inspect one tool_use block; return safety-warning event dicts (possibly empty)."""
+# Paths agent is allowed to touch outside the project root without warning.
+# Anything else triggers `out_of_project_write` warning.
+_OUT_OF_PROJECT_ALLOWED_PREFIXES = (
+    "/tmp/", "/private/tmp/", "/var/folders/",          # system temp
+    str(Path.home() / ".cache") + "/",                  # XDG cache
+    str(Path.home() / ".local") + "/",                  # XDG data
+    str(Path.home() / ".gitconfig"),                    # git config (file)
+    str(Path.home() / "Library" / "Caches") + "/",      # macOS cache
+)
+
+
+def _path_outside_project(file_path: str, project_root: str) -> bool:
+    """Return True if file_path resolves outside project_root and not in an
+    allowed prefix (system temp, XDG cache/data). Best-effort, never raises."""
+    if not file_path or not project_root:
+        return False
+    try:
+        # Resolve symlinks + normalize. Don't require existence (file may be new).
+        target = Path(file_path).expanduser()
+        if not target.is_absolute():
+            return False  # relative path → claude_runner CWDs to project_root
+        target = target.resolve(strict=False)
+        root = Path(project_root).expanduser().resolve(strict=False)
+        target_str = str(target)
+        # Allowed prefixes (system temp, XDG, etc.)
+        for prefix in _OUT_OF_PROJECT_ALLOWED_PREFIXES:
+            if target_str == prefix.rstrip("/") or target_str.startswith(prefix):
+                return False
+        try:
+            target.relative_to(root)
+            return False  # inside project root
+        except ValueError:
+            return True   # outside
+    except Exception:
+        return False
+
+
+def _scan_tool_use_for_danger(block: dict, project_path: str = "") -> list[dict]:
+    """Inspect one tool_use block; return safety-warning event dicts (possibly empty).
+
+    project_path is the project root — used to detect writes outside it
+    (`out_of_project_write` warning).
+    """
     warns: list[dict] = []
     name = block.get("name") or ""
     inp = block.get("input") or {}
@@ -617,6 +664,7 @@ def _scan_tool_use_for_danger(block: dict) -> list[dict]:
                 break  # one warning per bash invocation is enough
     elif name in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
         path = inp.get("file_path") or inp.get("notebook_path") or ""
+        # Sacred-file check (high-impact persistence vector)
         for suf in _SACRED_FILE_SUFFIXES:
             if path.endswith(suf):
                 warns.append({
@@ -627,6 +675,16 @@ def _scan_tool_use_for_danger(block: dict) -> list[dict]:
                     "tool_use_id": block.get("id"),
                 })
                 break
+        # Out-of-project-root check (location hygiene)
+        if project_path and _path_outside_project(path, project_path):
+            warns.append({
+                "type": "agent_safety_warning",
+                "category": "out_of_project_write",
+                "path": path,
+                "project_root": project_path,
+                "tool": name,
+                "tool_use_id": block.get("id"),
+            })
     return warns
 
 
@@ -869,7 +927,7 @@ async def _consume_into_buffer(s: ActiveStream, project_path: str):
                     if btype == "tool_use":
                         if block.get("name") in _CHECKPOINT_TRIGGERS:
                             pending_tool_uses[block["id"]] = block["name"]
-                        _safety_warnings.extend(_scan_tool_use_for_danger(block))
+                        _safety_warnings.extend(_scan_tool_use_for_danger(block, project_path))
                     elif btype == "text":
                         _txt = block.get("text") or ""
                         _new, _was = _redact_leaks_in_text(_txt)

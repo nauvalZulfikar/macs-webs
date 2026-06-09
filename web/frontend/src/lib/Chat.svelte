@@ -371,6 +371,7 @@ let statePanelOpen = $state(false)
         dangerous_bash: 'Bash command flagged',
         sacred_file_write: 'Sensitive file write',
         system_prompt_leak_redacted: 'System prompt leak redacted',
+        out_of_project_write: 'Write outside project root',
       }
       const detail = w.path || w.command || w.subcategory || w.category
       toast({
@@ -1031,6 +1032,8 @@ let statePanelOpen = $state(false)
               ? { ring: 'border-sky-500/40 bg-sky-500/10', text: 'text-sky-200', dot: 'bg-sky-400', icon: '🛡️' }
               : m.category === 'sacred_file_write'
               ? { ring: 'border-amber-500/40 bg-amber-500/10', text: 'text-amber-200', dot: 'bg-amber-400', icon: '📝' }
+              : m.category === 'out_of_project_write'
+              ? { ring: 'border-purple-500/40 bg-purple-500/10', text: 'text-purple-200', dot: 'bg-purple-400', icon: '📍' }
               : { ring: 'border-red-500/40 bg-red-500/10', text: 'text-red-200', dot: 'bg-red-400', icon: '⚠️' }}
             <div class="max-w-[88%] rounded-2xl border {palette.ring} px-3.5 py-2 text-[12px] {palette.text} shadow-sm" data-testid="safety-warning-{m.category}">
               <div class="flex items-start gap-2">
@@ -1041,6 +1044,7 @@ let statePanelOpen = $state(false)
                     {#if m.category === 'dangerous_bash'}MACS safety · dangerous bash blocked
                     {:else if m.category === 'sacred_file_write'}MACS safety · sensitive file write
                     {:else if m.category === 'system_prompt_leak_redacted'}MACS safety · system prompt leak redacted
+                    {:else if m.category === 'out_of_project_write'}MACS hygiene · write outside project root
                     {:else}MACS safety · {m.category}{/if}
                   </div>
                   {#if m.subcategory}
