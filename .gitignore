@@ -47,3 +47,4 @@ web/frontend/node_modules/
 .env.local
 .env.*.local
 graphify-out/
+.venv.broken*
