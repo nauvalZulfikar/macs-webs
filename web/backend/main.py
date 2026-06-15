@@ -50,7 +50,7 @@ import git_utils
 import browser_runs
 from watcher_engine import engine as watcher_engine
 from claude_runner import stream_chat
-from sessions import list_sessions, load_session
+from sessions import list_sessions, load_session, delete_session
 from auth import (
     auth_middleware,
     current_user,

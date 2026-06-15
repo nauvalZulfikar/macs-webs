@@ -175,3 +175,27 @@ def load_session(project_path: str, session_id: str) -> List[dict]:
                     })
 
     return messages
+
+
+# Valid Claude Code session ids are uuids; restrict to a safe charset so a
+# crafted session_id can't escape the session dir via path traversal.
+_SAFE_SID = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def delete_session(project_path: str, session_id: str) -> bool:
+    """Delete a project's `.jsonl` session file. Returns True if removed.
+
+    Rejects session_ids containing path separators / traversal, and verifies
+    the resolved file actually sits inside the project's session dir."""
+    if not session_id or not _SAFE_SID.match(session_id):
+        return False
+    sdir = session_dir(project_path)
+    f = (sdir / f"{session_id}.jsonl").resolve()
+    # Defense-in-depth: file must live directly under the session dir.
+    if f.parent != sdir.resolve() or not f.is_file():
+        return False
+    try:
+        f.unlink()
+        return True
+    except OSError:
+        return False
