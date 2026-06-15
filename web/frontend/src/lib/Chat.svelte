@@ -937,7 +937,7 @@ let statePanelOpen = $state(false)
   }
 </script>
 
-<div class="view-in flex h-dvh flex-col bg-neutral-950">
+<div class="view-in flex h-dvh flex-col bg-white">
   <!-- header -->
   <header class="flex items-center gap-2 border-b border-neutral-800 bg-neutral-950/70 px-3 py-3 backdrop-blur-md">
     <button
