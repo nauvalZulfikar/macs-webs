@@ -16,6 +16,11 @@ from pathlib import Path
 
 IDLE_TIMEOUT = int(os.environ.get("CLAUDE_IDLE_TIMEOUT", "60"))
 MAX_RETRIES = int(os.environ.get("CLAUDE_MAX_RETRIES", "2"))
+# StreamReader default per-line limit is 64KB. claude --output-format stream-json
+# emits each event as ONE JSON line, and a single tool_result (Read of a big
+# file, grep of a big match set) easily exceeds 64KB → readline() raises
+# LimitOverrunError. Raise to 16MB so any realistic tool output fits.
+PIPE_LIMIT = int(os.environ.get("CLAUDE_PIPE_LIMIT", str(16 * 1024 * 1024)))
 
 
 async def _run_once(
@@ -38,6 +43,7 @@ async def _run_once(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         preexec_fn=os.setsid,
+        limit=PIPE_LIMIT,
     )
 
     last_seen_session = session_id
@@ -54,6 +60,20 @@ async def _run_once(
                     pass
                 yield {"type": "_idle_timeout", "session_id": last_seen_session}
                 return
+            except asyncio.LimitOverrunError as e:
+                # One JSON line exceeded PIPE_LIMIT. Drain it (we can't parse
+                # it anyway) and keep going so the stream doesn't die on a
+                # single oversized tool output.
+                try:
+                    await proc.stdout.readexactly(e.consumed)
+                except (asyncio.IncompleteReadError, Exception):
+                    pass
+                yield {
+                    "type": "raw",
+                    "text": f"[backend: dropped oversized event ({e.consumed} bytes > {PIPE_LIMIT})]",
+                    "_oversized": True,
+                }
+                continue
             if not raw_line:  # EOF
                 break
             line = raw_line.decode("utf-8", errors="replace").strip()

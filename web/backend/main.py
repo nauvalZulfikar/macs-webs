@@ -906,6 +906,81 @@ async def _heartbeat_loop(s: ActiveStream):
         print(f"[hb] error for {s.stream_id[:8]}: {e}")
 
 
+def _humanize_backend_error(raw: str) -> str:
+    """Translate raw Python/asyncio errors into user-readable Indonesian text.
+
+    Keep it short — the UI shows this as the visible error message. The full
+    raw text is preserved in the event's `_detail` field for power users."""
+    r = raw or ""
+    rl = r.lower()
+    if "separator is found, but chunk is longer than limit" in rl or "limitoverrunerror" in rl:
+        return (
+            "Output dari salah satu tool kepanjangan buat dibaca sekaligus (pipe pecah). "
+            "Coba persempit perintah (grep/Read range yg lebih kecil) atau retry — limit pipe udah dinaikin."
+        )
+    if "idle" in rl and "giving up" in rl:
+        return "Claude diem terlalu lama (gak ngirim apa-apa). Coba kirim ulang pesannya."
+    if "session persist" in rl:
+        return "Gagal nyimpen session ID ke DB — chat lo masih hidup tapi resume berikutnya mungkin gak nyambung."
+    if "stream aborted by user" in rl:
+        return "Stream lo stop secara manual."
+    if "broken pipe" in rl or "brokenpipeerror" in rl:
+        return "Koneksi ke proses claude putus mendadak (kemungkinan crash). Retry."
+    if "verify spawn failed" in rl:
+        return "Gagal nyalain verifikasi screenshot. Edit tetep landed, cuma gak ada bukti visual otomatis."
+    if "verify timeout" in rl:
+        return "Verifikasi screenshot kelamaan (>4 menit). Edit tetep landed, cuma verdict belum keluar."
+    # Default: keep the raw text but prefix human hint.
+    return f"Ada error backend: {r[:200]}"
+
+
+def _maybe_rebuild_macs_frontend(project_path: str) -> Optional[dict]:
+    """If the just-finished stream touched the MACS web frontend source AND
+    the live dist/ build is now stale, kick off `npm run build` in background.
+
+    Returns a dict describing the action (event payload) or None if nothing to do.
+    Scoped to the macs project's web/frontend dir to avoid running npm in random
+    projects."""
+    root = Path(project_path).expanduser().resolve()
+    fe = root / "web" / "frontend"
+    src = fe / "src"
+    dist_index = fe / "dist" / "index.html"
+    if not src.is_dir() or not (fe / "package.json").is_file():
+        return None
+    try:
+        dist_mtime = dist_index.stat().st_mtime if dist_index.is_file() else 0
+        newest_src = 0.0
+        for p in src.rglob("*"):
+            if not p.is_file():
+                continue
+            if p.suffix not in (".svelte", ".ts", ".js", ".css", ".html"):
+                continue
+            m = p.stat().st_mtime
+            if m > newest_src:
+                newest_src = m
+        if newest_src <= dist_mtime:
+            return None
+    except OSError:
+        return None
+    # Fire-and-forget: don't await the build, just kick it off.
+    try:
+        proc = subprocess.Popen(
+            ["npm", "run", "build"],
+            cwd=str(fe),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        return {
+            "type": "frontend_rebuild_started",
+            "pid": proc.pid,
+            "cwd": str(fe),
+            "reason": "source newer than dist/index.html",
+        }
+    except Exception as e:
+        return {"type": "frontend_rebuild_failed", "error": str(e)}
+
+
 async def _consume_into_buffer(s: ActiveStream, project_path: str):
     """Background task: drive claude_runner.stream_chat() into the buffer."""
     pending_tool_uses = {}  # id -> name (Edit/Write/Bash etc.) awaiting result
@@ -981,11 +1056,20 @@ async def _consume_into_buffer(s: ActiveStream, project_path: str):
                 })
                 s.new_event.set()
     except asyncio.CancelledError:
-        s.events.append({"type": "error", "error": "stream aborted by user"})
+        s.events.append({
+            "type": "error",
+            "error": _humanize_backend_error("stream aborted by user"),
+            "_detail": "stream aborted by user",
+        })
         s.new_event.set()
         raise
     except Exception as e:
-        s.events.append({"type": "error", "error": f"backend: {e!s}"})
+        raw = f"backend: {e!s}"
+        s.events.append({
+            "type": "error",
+            "error": _humanize_backend_error(raw),
+            "_detail": raw,
+        })
         s.new_event.set()
     finally:
         if s.session_id:
@@ -998,7 +1082,12 @@ async def _consume_into_buffer(s: ActiveStream, project_path: str):
                         db.commit()
                 s.events.append({"type": "session_saved", "session_id": s.session_id})
             except Exception as e:
-                s.events.append({"type": "error", "error": f"session persist: {e!s}"})
+                raw = f"session persist: {e!s}"
+                s.events.append({
+                    "type": "error",
+                    "error": _humanize_backend_error(raw),
+                    "_detail": raw,
+                })
         # ─── Post-stream verification (UI-verify rule) ──────────────────────
         # If caller supplied verify_url + verify_what, spawn a one-shot claude
         # to screenshot and judge. Result emitted as verify_result BEFORE
@@ -1016,6 +1105,16 @@ async def _consume_into_buffer(s: ActiveStream, project_path: str):
                 verdict = {"error": f"verify hook exception: {e!s}"}
             s.events.append({"type": "verify_result", **verdict})
             s.new_event.set()
+        # ─── Auto-rebuild MACS frontend ────────────────────────────────────
+        # If this stream edited the MACS web frontend source, kick a rebuild
+        # so the live dist/ matches. Fire-and-forget; emit event for visibility.
+        try:
+            rebuild_evt = _maybe_rebuild_macs_frontend(project_path)
+            if rebuild_evt:
+                s.events.append(rebuild_evt)
+                s.new_event.set()
+        except Exception as e:
+            print(f"[rebuild] error: {e}")
         s.events.append({"type": "stream_done"})
         s.done = True
         s.last_event_at = time.time()
@@ -1538,6 +1637,7 @@ async def _run_verify(verify_url: str, verify_what: str, project_path: str) -> d
             *cmd, cwd=str(cwd),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            limit=16 * 1024 * 1024,
         )
     except Exception as e:
         return {"error": f"verify spawn failed: {e!s}"}
@@ -1554,6 +1654,14 @@ async def _run_verify(verify_url: str, verify_what: str, project_path: str) -> d
                 raw = await asyncio.wait_for(proc.stdout.readline(), timeout=remaining)
             except asyncio.TimeoutError:
                 return {"error": f"verify timeout after {VERIFY_TIMEOUT_S}s"}
+            except asyncio.LimitOverrunError as e:
+                # Drain oversized line and continue — verdict is on the LAST
+                # line so a mid-stream oversized event is recoverable.
+                try:
+                    await proc.stdout.readexactly(e.consumed)
+                except Exception:
+                    pass
+                continue
             if not raw:
                 break
             line = raw.decode("utf-8", errors="replace").strip()
@@ -1847,6 +1955,7 @@ async def plan_mission(payload: MissionPlanPayload, session: Session = Depends(g
         cwd=macs_dir,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        limit=16 * 1024 * 1024,
     )
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=90)
