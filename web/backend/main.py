@@ -436,6 +436,8 @@ class ActiveStream:
     mission_agent_id: Optional[int] = None
     watcher_id: Optional[int] = None
     watcher_fire_id: Optional[int] = None
+    verify_url: Optional[str] = None
+    verify_what: Optional[str] = None
 
 
 _streams: Dict[str, "ActiveStream"] = {}
@@ -997,6 +999,23 @@ async def _consume_into_buffer(s: ActiveStream, project_path: str):
                 s.events.append({"type": "session_saved", "session_id": s.session_id})
             except Exception as e:
                 s.events.append({"type": "error", "error": f"session persist: {e!s}"})
+        # ─── Post-stream verification (UI-verify rule) ──────────────────────
+        # If caller supplied verify_url + verify_what, spawn a one-shot claude
+        # to screenshot and judge. Result emitted as verify_result BEFORE
+        # stream_done so the frontend keeps the SSE channel open through it.
+        if s.verify_url and s.verify_what:
+            s.events.append({
+                "type": "verify_starting",
+                "url": s.verify_url,
+                "what": s.verify_what,
+            })
+            s.new_event.set()
+            try:
+                verdict = await _run_verify(s.verify_url, s.verify_what, project_path)
+            except Exception as e:
+                verdict = {"error": f"verify hook exception: {e!s}"}
+            s.events.append({"type": "verify_result", **verdict})
+            s.new_event.set()
         s.events.append({"type": "stream_done"})
         s.done = True
         s.last_event_at = time.time()
@@ -1135,6 +1154,12 @@ class ChatPayload(BaseModel):
     message: str
     new_conversation: bool = False
     elevated: bool = False
+    # Optional post-stream verification. If both set, after claude finishes,
+    # backend spawns a one-shot `claude -p` that screenshots `verify_url` and
+    # judges whether the page satisfies `verify_what`. Result is appended as a
+    # `verify_result` event in the same stream BEFORE `stream_done`.
+    verify_url: Optional[str] = None
+    verify_what: Optional[str] = None
 
 
 class SwitchSessionPayload(BaseModel):
@@ -1473,6 +1498,107 @@ def delete_project_task(pid: int, tid: int,
 
 # ─── Chat stream endpoints (new model) ────────────────────────────────────
 
+# Verification subprocess: spawns `claude -p` to screenshot a URL and judge
+# whether the rendered page satisfies a natural-language goal. Output parsed
+# as JSON {pass, reason, screenshot_path}. Bounded by VERIFY_TIMEOUT_S.
+VERIFY_TIMEOUT_S = int(os.environ.get("MACS_VERIFY_TIMEOUT_S", "240"))
+
+
+async def _run_verify(verify_url: str, verify_what: str, project_path: str) -> dict:
+    """One-shot claude subprocess: screenshot `verify_url`, judge against
+    `verify_what`. Returns {pass, reason, screenshot_path} or {error: ...}.
+    Never raises — always returns a dict the UI can render."""
+    prompt = (
+        "You are running as a one-shot verification step inside MACS web. "
+        "Your only job: prove or disprove a UI claim with a screenshot.\n\n"
+        f"GOAL: {verify_what}\n"
+        f"URL:  {verify_url}\n\n"
+        "Steps:\n"
+        f"1. Take a screenshot of {verify_url}. Prefer the playwright MCP "
+        "tools (mcp__playwright__browser_navigate then mcp__playwright__browser_take_screenshot) "
+        "if available; else use mcp__browser-agent__browse_autonomous with task "
+        "'navigate then screenshot'. Save the file under /tmp/macs-verdict-*.png "
+        "(absolute path).\n"
+        f"2. Look at the screenshot. Decide whether the page actually satisfies the GOAL "
+        "above. Be strict — 'looks like it might' = fail. Visible target element = pass.\n"
+        "3. Output ONLY one JSON object on the LAST line of your reply, no fences, no "
+        "trailing prose. Schema:\n"
+        '   {"pass": true|false, "reason": "<one short line>", "screenshot_path": "/tmp/..."}\n'
+        "If you could not even open the URL, output "
+        '{"pass": false, "reason": "<why>", "screenshot_path": ""}\n'
+    )
+    cwd = Path(project_path).expanduser().resolve()
+    cmd = [
+        "claude", "-p", prompt,
+        "--output-format", "stream-json", "--verbose",
+        "--permission-mode", "bypassPermissions",
+    ]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, cwd=str(cwd),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except Exception as e:
+        return {"error": f"verify spawn failed: {e!s}"}
+
+    last_text = ""
+    deadline = time.time() + VERIFY_TIMEOUT_S
+    try:
+        assert proc.stdout is not None
+        while True:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                return {"error": f"verify timeout after {VERIFY_TIMEOUT_S}s"}
+            try:
+                raw = await asyncio.wait_for(proc.stdout.readline(), timeout=remaining)
+            except asyncio.TimeoutError:
+                return {"error": f"verify timeout after {VERIFY_TIMEOUT_S}s"}
+            if not raw:
+                break
+            line = raw.decode("utf-8", errors="replace").strip()
+            if not line:
+                continue
+            try:
+                evt = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if evt.get("type") == "assistant":
+                for blk in evt.get("message", {}).get("content", []) or []:
+                    if blk.get("type") == "text":
+                        last_text += blk.get("text") or ""
+    finally:
+        if proc.returncode is None:
+            try:
+                proc.kill()
+            except (ProcessLookupError, PermissionError):
+                pass
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=3)
+            except asyncio.TimeoutError:
+                pass
+
+    # Extract last JSON object from the assistant's text. Accept either a clean
+    # last line or a JSON blob anywhere in the output as long as it has "pass".
+    m = None
+    for cand in re.finditer(r"\{[^{}]*\"pass\"[^{}]*\}", last_text, re.DOTALL):
+        m = cand  # keep last match
+    if not m:
+        return {"error": "no JSON verdict in claude output",
+                "raw_tail": last_text[-500:]}
+    try:
+        verdict = json.loads(m.group(0))
+    except Exception as e:
+        return {"error": f"verdict JSON parse failed: {e!s}",
+                "raw": m.group(0)[:500]}
+    # Normalize shape
+    return {
+        "pass": bool(verdict.get("pass", False)),
+        "reason": str(verdict.get("reason", ""))[:500],
+        "screenshot_path": str(verdict.get("screenshot_path", "")),
+    }
+
+
 def _spawn_stream(
     project: Project,
     message: str,
@@ -1484,6 +1610,8 @@ def _spawn_stream(
     watcher_id: Optional[int] = None,
     watcher_fire_id: Optional[int] = None,
     allow_reuse: bool = True,
+    verify_url: Optional[str] = None,
+    verify_what: Optional[str] = None,
 ) -> tuple[ActiveStream, bool]:
     """Spawn a chat stream. Returns (stream, reused). Shared by chat_start,
     missions, and watchers."""
@@ -1510,6 +1638,8 @@ def _spawn_stream(
         mission_agent_id=mission_agent_id,
         watcher_id=watcher_id,
         watcher_fire_id=watcher_fire_id,
+        verify_url=verify_url,
+        verify_what=verify_what,
     )
     _streams[stream_id] = s
     _active_by_key[key] = stream_id
@@ -1541,6 +1671,8 @@ async def chat_start(pid: int, payload: ChatPayload, session: Session = Depends(
         message=payload.message,
         elevated=payload.elevated,
         new_conversation=payload.new_conversation,
+        verify_url=(payload.verify_url or None),
+        verify_what=(payload.verify_what or None),
     )
     # Silent-drop guard: if we reused an existing stream but the incoming
     # message is different from the active stream's user_message, the
