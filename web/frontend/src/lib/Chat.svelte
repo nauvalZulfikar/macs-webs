@@ -273,9 +273,11 @@ let statePanelOpen = $state(false)
     }
     loadingMessages = false
     scrollDown()
-    if (import.meta.env.DEV) {
-      window.__chatTest = { inject: handleEvent }
-    }
+    // Expose a small test hook for headless verification (Playwright +
+    // smoke-test scripts). Lets us push synthetic events through the same
+    // pipeline as the SSE stream without needing to crash a real one.
+    // No new attack surface — events are also reachable from any backend.
+    window.__chatTest = { inject: handleEvent }
   })
 
   async function scrollDown() {
@@ -458,6 +460,7 @@ let statePanelOpen = $state(false)
       return
     }
     error = null
+    landedSummary = null
     const useNew = pendingNewConvo
     pendingNewConvo = false
     // Attach uploaded images: append Read instruction + path to the prompt so
@@ -1031,6 +1034,15 @@ let statePanelOpen = $state(false)
         {/if}
         {#if myStream?.reconnecting}
           <span class="rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] text-amber-300">reconnecting…</span>
+        {/if}
+        {#if landedSummary && landedSummary.edits > 0 && landedSummary.hadError}
+          <span
+            class="inline-flex items-center gap-1 rounded-full bg-emerald-500/20 px-2 py-0.5 text-[10px] text-emerald-300"
+            title={landedSummary.files.join(', ')}
+            data-testid="landed-badge"
+          >
+            ✓ {landedSummary.edits} file landed{landedSummary.rebuildFired ? ' · dist rebuilt' : ''}
+          </span>
         {/if}
       </div>
       <div class="truncate text-xs text-neutral-500">
