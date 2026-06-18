@@ -1079,10 +1079,39 @@ def _maybe_rebuild_macs_frontend(project_path: str) -> Optional[dict]:
             "type": "frontend_rebuild_started",
             "pid": proc.pid,
             "cwd": str(fe),
+            "started_at": time.time(),
+            "dist_index": str(dist_index),
             "reason": "source newer than dist/index.html",
         }
     except Exception as e:
         return {"type": "frontend_rebuild_failed", "error": str(e)}
+
+
+async def _emit_rebuild_finished(s: "ActiveStream", dist_index: str, started_at: float):
+    """Poll the dist/index.html mtime; when it exceeds started_at, the rebuild
+    has produced new bytes — emit frontend_rebuild_finished so the UI can
+    auto-refresh. Bounded to 60s in case the build hangs/fails silently."""
+    deadline = started_at + 60
+    di = Path(dist_index)
+    while time.time() < deadline:
+        try:
+            if di.is_file() and di.stat().st_mtime > started_at:
+                s.events.append({
+                    "type": "frontend_rebuild_finished",
+                    "ok": True,
+                    "elapsed_s": round(time.time() - started_at, 2),
+                })
+                s.new_event.set()
+                return
+        except OSError:
+            pass
+        await asyncio.sleep(0.5)
+    s.events.append({
+        "type": "frontend_rebuild_finished",
+        "ok": False,
+        "reason": "timeout (>60s)",
+    })
+    s.new_event.set()
 
 
 async def _consume_into_buffer(s: ActiveStream, project_path: str):
@@ -1234,6 +1263,17 @@ async def _consume_into_buffer(s: ActiveStream, project_path: str):
                 s.new_event.set()
                 if rebuild_evt.get("type") == "frontend_rebuild_started":
                     s.rebuild_fired = True
+                    # Spawn a poller so we can emit frontend_rebuild_finished
+                    # when dist/index.html actually lands new bytes. Lets the
+                    # frontend auto-refresh exactly when the new build is ready.
+                    try:
+                        asyncio.create_task(_emit_rebuild_finished(
+                            s,
+                            rebuild_evt.get("dist_index", ""),
+                            float(rebuild_evt.get("started_at", time.time())),
+                        ))
+                    except Exception as e:
+                        print(f"[rebuild] finished-poll schedule error: {e}")
         except Exception as e:
             print(f"[rebuild] error: {e}")
         # Phase 4: synthetic landed_summary event so the UI can show

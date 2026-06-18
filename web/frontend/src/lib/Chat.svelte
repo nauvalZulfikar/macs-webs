@@ -425,6 +425,32 @@ let statePanelOpen = $state(false)
       toast({ kind: 'error', title: 'Stream error', body: String(error).slice(0, 120), duration: 5000 })
       return
     }
+    if (evt.type === 'frontend_rebuild_finished' && evt.ok) {
+      // Auto-refresh after dist/ rebuild lands. Skip if user is actively
+      // streaming or has a draft in the input — don't blow away in-progress
+      // work just because a build finished.
+      const hasDraft = (input || '').trim().length > 0
+      if (pending || hasDraft) {
+        toast({
+          kind: 'info',
+          title: 'UI build updated',
+          body: `Refresh tab to see the new build (skipped auto-reload: ${pending ? 'streaming' : 'draft in input'})`,
+          duration: 8000,
+        })
+        return
+      }
+      const SECS = 5
+      toast({
+        kind: 'success',
+        title: `Auto-refresh in ${SECS}s`,
+        body: 'New UI build ready · close this tab to cancel',
+        duration: SECS * 1000 + 500,
+      })
+      setTimeout(() => {
+        try { window.location.reload() } catch {}
+      }, SECS * 1000)
+      return
+    }
     if (evt.type === 'landed_summary') {
       // Phase 4: backend summarizes what mutations stuck even if the stream
       // hit an error. Show a small green badge so the user knows refreshing
