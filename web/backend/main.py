@@ -1087,31 +1087,35 @@ def _maybe_rebuild_macs_frontend(project_path: str) -> Optional[dict]:
         return {"type": "frontend_rebuild_failed", "error": str(e)}
 
 
-async def _emit_rebuild_finished(s: "ActiveStream", dist_index: str, started_at: float):
-    """Poll the dist/index.html mtime; when it exceeds started_at, the rebuild
-    has produced new bytes — emit frontend_rebuild_finished so the UI can
-    auto-refresh. Bounded to 60s in case the build hangs/fails silently."""
-    deadline = started_at + 60
+async def _await_rebuild_finished(dist_index: str, started_at: float,
+                                   timeout: float = 15.0) -> dict:
+    """Poll dist/index.html mtime until it exceeds started_at, then return the
+    `frontend_rebuild_finished` event payload.
+
+    This MUST run BEFORE the parent emits `stream_done`, because the frontend's
+    poll loop stops as soon as it sees done=true (streamsStore.svelte.js:343).
+    A separate background task would emit events into a stream nobody's
+    listening to anymore. So we block stream completion for up to `timeout`
+    seconds — a Vite build is ~1.5s in practice; bounded so a hang doesn't
+    keep the chat in 'pending' state forever."""
+    deadline = started_at + timeout
     di = Path(dist_index)
     while time.time() < deadline:
         try:
             if di.is_file() and di.stat().st_mtime > started_at:
-                s.events.append({
+                return {
                     "type": "frontend_rebuild_finished",
                     "ok": True,
                     "elapsed_s": round(time.time() - started_at, 2),
-                })
-                s.new_event.set()
-                return
+                }
         except OSError:
             pass
-        await asyncio.sleep(0.5)
-    s.events.append({
+        await asyncio.sleep(0.3)
+    return {
         "type": "frontend_rebuild_finished",
         "ok": False,
-        "reason": "timeout (>60s)",
-    })
-    s.new_event.set()
+        "reason": f"timeout (>{int(timeout)}s)",
+    }
 
 
 async def _consume_into_buffer(s: ActiveStream, project_path: str):
@@ -1263,17 +1267,20 @@ async def _consume_into_buffer(s: ActiveStream, project_path: str):
                 s.new_event.set()
                 if rebuild_evt.get("type") == "frontend_rebuild_started":
                     s.rebuild_fired = True
-                    # Spawn a poller so we can emit frontend_rebuild_finished
-                    # when dist/index.html actually lands new bytes. Lets the
-                    # frontend auto-refresh exactly when the new build is ready.
+                    # Block stream completion until rebuild lands (bounded 15s).
+                    # We can't fire-and-forget here because the frontend poll
+                    # loop stops as soon as `done` flips true — events appended
+                    # after stream_done go to a stream nobody's polling.
                     try:
-                        asyncio.create_task(_emit_rebuild_finished(
-                            s,
+                        finished_evt = await _await_rebuild_finished(
                             rebuild_evt.get("dist_index", ""),
                             float(rebuild_evt.get("started_at", time.time())),
-                        ))
+                            timeout=15.0,
+                        )
+                        s.events.append(finished_evt)
+                        s.new_event.set()
                     except Exception as e:
-                        print(f"[rebuild] finished-poll schedule error: {e}")
+                        print(f"[rebuild] await-finished error: {e}")
         except Exception as e:
             print(f"[rebuild] error: {e}")
         # Phase 4: synthetic landed_summary event so the UI can show
