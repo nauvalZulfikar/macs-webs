@@ -51,6 +51,7 @@ import browser_runs
 from watcher_engine import engine as watcher_engine
 from claude_runner import stream_chat
 from sessions import list_sessions, load_session, delete_session, session_stats
+from summarizer import read_summary_tail, maybe_summarize_async
 from auth import (
     auth_middleware,
     current_user,
@@ -455,12 +456,28 @@ _active_by_key: Dict[str, str] = {}  # "{pid}:{sid_or_'new'}" → stream_id (onl
 
 STATE_DIR_NAME = ".macs"
 STATE_FILE_NAME = "STATE.md"
+CHATS_DIR_NAME = "chats"
 MAX_STATE_INJECT_BYTES = 2048
+MAX_CHAT_STATE_BYTES = 4096          # cap per-chat handover file on disk
+MAX_CHAT_STATE_INJECT_BYTES = 1800   # what we inject into prompt
 STATE_ARCHIVE_BYTES = 100_000  # rotate when file > 100KB
+
+# Defense-in-depth: same shape as sessions._SAFE_SID
+_SAFE_CHAT_SID = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 def _state_file_path(project_path: str) -> Path:
     return Path(project_path) / STATE_DIR_NAME / STATE_FILE_NAME
+
+
+def _chat_state_path(project_path: str, session_id: Optional[str]) -> Optional[Path]:
+    """Per-chat handover note — separate from project-wide STATE.md so that
+    distinct chat sessions in the same project don't share context bleed.
+
+    Returns None if session_id is missing / unsafe."""
+    if not session_id or not _SAFE_CHAT_SID.match(session_id):
+        return None
+    return Path(project_path) / STATE_DIR_NAME / CHATS_DIR_NAME / f"{session_id}.md"
 
 
 def _read_state_tail(project_path: str) -> Optional[str]:
@@ -474,19 +491,106 @@ def _read_state_tail(project_path: str) -> Optional[str]:
         return None
 
 
-def _wrap_with_state(project_path: str, message: str) -> str:
-    """Prepend safety preamble + STATE.md tail to the user message."""
-    tail = _read_state_tail(project_path)
+def _read_chat_state_tail(project_path: str, session_id: Optional[str]) -> Optional[str]:
+    """Read tail of per-chat handover note. None if not present."""
+    sf = _chat_state_path(project_path, session_id)
+    if not sf or not sf.is_file():
+        return None
+    try:
+        data = sf.read_text(encoding="utf-8", errors="replace")
+        return data[-MAX_CHAT_STATE_INJECT_BYTES:]
+    except Exception:
+        return None
+
+
+def _write_chat_state(project_path: str, session_id: Optional[str],
+                      done: str, nxt: str, blocked: str,
+                      persisted_lines: list, user_msg_preview: str) -> bool:
+    """Overwrite (not append) per-chat handover note so latest = top.
+
+    Keeps the file small (~MAX_CHAT_STATE_BYTES) — its purpose is to give the
+    next spawned claude a fresh, focused snapshot of THIS chat's progress,
+    not a full audit trail. The full audit trail lives in JSONL transcript."""
+    sf = _chat_state_path(project_path, session_id)
+    if not sf:
+        return False
+    try:
+        sf.parent.mkdir(parents=True, exist_ok=True)
+        from datetime import datetime
+        ts = datetime.now().astimezone().isoformat(timespec="seconds")
+        persisted_block = ""
+        if persisted_lines:
+            persisted_block = "\n## Files touched\n" + "\n".join(
+                f"- {p}" for p in persisted_lines[:20]
+            ) + "\n"
+        body = (
+            f"# Chat handover · {session_id[:8]}\n"
+            f"_Last update: {ts}_\n\n"
+            f"## Last user message\n{user_msg_preview or '(none)'}\n\n"
+            f"## Status\n"
+            f"- **done**: {done or '—'}\n"
+            f"- **next**: {nxt or '—'}\n"
+            f"- **blocked**: {blocked or '—'}\n"
+            f"{persisted_block}"
+        )
+        # Trim if oversized (shouldn't happen with constraints above)
+        if len(body) > MAX_CHAT_STATE_BYTES:
+            body = body[:MAX_CHAT_STATE_BYTES] + "\n[...truncated]\n"
+        sf.write_text(body, encoding="utf-8")
+        return True
+    except Exception as e:
+        print(f"[chat-state] write error: {e}")
+        return False
+
+
+def _wrap_with_state(project_path: str, message: str,
+                     session_id: Optional[str] = None) -> str:
+    """Prepend safety preamble + conversation summary + handover/state to the
+    user message.
+
+    Stacking order (top to bottom):
+      <safety> + <responsiveness> + <state-contract>     (always)
+      <conversation-summary>                              (Phase 2 — if exists)
+      <system-context> per-chat handover OR project STATE  (Phase 1)
+      <actual user message>
+
+    Per-chat handover is preferred over project STATE.md because it isolates
+    parallel chats in the same project. The summary provides historical
+    trajectory; the handover provides the latest action; both feed Claude."""
+    summary_tail = read_summary_tail(project_path, session_id)
+    chat_tail = _read_chat_state_tail(project_path, session_id)
+    state_tail = _read_state_tail(project_path)
+
+    summary_block = ""
+    if summary_tail and summary_tail.strip():
+        summary_block = (
+            "<conversation-summary>\n"
+            f"Distilled summary of this chat's history (built by local Ollama from the JSONL transcript). "
+            "Use this as your map of what happened before; do NOT re-read the literal transcript to re-derive context. "
+            "Do NOT echo back to the user.\n"
+            f"{summary_tail.strip()}\n"
+            "</conversation-summary>\n\n"
+        )
+
     state_block = ""
-    if tail and tail.strip():
+    if chat_tail and chat_tail.strip():
         state_block = (
             "<system-context>\n"
-            f"Recent state from .macs/STATE.md (last ~{MAX_STATE_INJECT_BYTES}B). "
-            "Use this to know where you left off; do NOT echo it back unless asked.\n"
-            f"{tail.strip()}\n"
+            f"Per-chat handover from .macs/chats/{(session_id or '?')[:8]}.md. "
+            "This is the latest snapshot of THIS chat's progress; trust it over the "
+            "long transcript when deciding next step. Do NOT echo back unless asked.\n"
+            f"{chat_tail.strip()}\n"
             "</system-context>\n\n"
         )
-    return _SAFETY_PREAMBLE + state_block + message
+    elif state_tail and state_tail.strip():
+        state_block = (
+            "<system-context>\n"
+            f"Recent project state from .macs/STATE.md (last ~{MAX_STATE_INJECT_BYTES}B). "
+            "Use this to know where you left off; do NOT echo it back unless asked.\n"
+            f"{state_tail.strip()}\n"
+            "</system-context>\n\n"
+        )
+    return _SAFETY_PREAMBLE + summary_block + state_block + message
 
 
 # ---------------------------------------------------------------------------
@@ -731,8 +835,9 @@ _STATUS_BLOCK_RE = re.compile(
 
 
 def _maybe_append_state(s: "ActiveStream", project_path: str):
-    """Scan the latest assistant text events for STATUS block, append to STATE.md.
-    Idempotent-ish: only appends one entry per stream. Best-effort, never raises."""
+    """Scan the latest assistant text events for STATUS block, append to STATE.md
+    AND overwrite the per-chat handover note (.macs/chats/<sid>.md).
+    Idempotent-ish: only writes once per stream. Best-effort, never raises."""
     try:
         final_text = ""
         for evt in reversed(s.events):
@@ -782,6 +887,36 @@ def _maybe_append_state(s: "ActiveStream", project_path: str):
                 pass
         with sf.open("a", encoding="utf-8") as f:
             f.write(entry)
+
+        # Phase 1: also write per-chat handover note so the next spawn of this
+        # specific chat gets a focused 1-page snapshot, not a project-wide blob.
+        try:
+            done, nxt, blocked = "", "", ""
+            for line in status_body.splitlines():
+                stripped = line.strip().lstrip("-").strip()
+                if stripped.lower().startswith("done:"):
+                    done = stripped[5:].strip()
+                elif stripped.lower().startswith("next:"):
+                    nxt = stripped[5:].strip()
+                elif stripped.lower().startswith("blocked:"):
+                    blocked = stripped[8:].strip()
+            persisted_lines = []
+            if persisted_body:
+                for line in persisted_body.splitlines():
+                    stripped = line.strip().lstrip("-").strip()
+                    if stripped:
+                        persisted_lines.append(stripped)
+            _write_chat_state(
+                project_path=project_path,
+                session_id=s.session_id,
+                done=done,
+                nxt=nxt,
+                blocked=blocked,
+                persisted_lines=persisted_lines,
+                user_msg_preview=user_msg_preview,
+            )
+        except Exception as e:
+            print(f"[chat-state] write hook error: {e}")
     except Exception as e:
         print(f"[state] append error: {e}")
 
@@ -986,7 +1121,7 @@ async def _consume_into_buffer(s: ActiveStream, project_path: str):
     pending_tool_uses = {}  # id -> name (Edit/Write/Bash etc.) awaiting result
     # Prepend STATE.md tail as <system-context> so claude has the running
     # context fresh, even after chat history is compacted upstream.
-    injected_message = _wrap_with_state(project_path, s.user_message)
+    injected_message = _wrap_with_state(project_path, s.user_message, s.session_id)
     hb_task = asyncio.create_task(_heartbeat_loop(s))
     try:
         async for evt in stream_chat(
@@ -1130,6 +1265,14 @@ async def _consume_into_buffer(s: ActiveStream, project_path: str):
             _maybe_append_state(s, project_path)
         except Exception as e:
             print(f"[state] post-turn error: {e}")
+
+        # Phase 2: fire-and-forget conversation summary build via local Ollama
+        # if the transcript has grown enough to justify it. Runs in a background
+        # thread so stream completion is not delayed.
+        try:
+            maybe_summarize_async(project_path, s.session_id)
+        except Exception as e:
+            print(f"[summarizer] schedule error: {e}")
         # Stop heartbeat task
         try:
             hb_task.cancel()
