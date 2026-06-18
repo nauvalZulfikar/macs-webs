@@ -149,6 +149,10 @@ let statePanelOpen = $state(false)
   let planPanelOpen = $state(false)
   let statsPanelOpen = $state(false)
 
+  // Phase 4: per-stream "edits landed despite error" summary, emitted by
+  // backend right before stream_done.
+  let landedSummary = $state(null)
+
   function fmtTokens(n) {
     if (!n) return '0'
     if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M'
@@ -417,6 +421,26 @@ let statePanelOpen = $state(false)
     if (evt.type === 'error') {
       error = evt.error || 'unknown error'
       toast({ kind: 'error', title: 'Stream error', body: String(error).slice(0, 120), duration: 5000 })
+      return
+    }
+    if (evt.type === 'landed_summary') {
+      // Phase 4: backend summarizes what mutations stuck even if the stream
+      // hit an error. Show a small green badge so the user knows refreshing
+      // will reveal the actual landed work.
+      landedSummary = {
+        edits: evt.edits_landed || 0,
+        files: evt.files || [],
+        rebuildFired: !!evt.rebuild_fired,
+        hadError: !!evt.had_error,
+      }
+      if (landedSummary.edits > 0 && landedSummary.hadError) {
+        toast({
+          kind: 'info',
+          title: `${landedSummary.edits} file landed (despite error)`,
+          body: landedSummary.rebuildFired ? 'dist/ rebuilt — refresh to see change' : 'check files manually',
+          duration: 6000,
+        })
+      }
       return
     }
   }
