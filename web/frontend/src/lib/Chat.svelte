@@ -144,6 +144,31 @@ let statePanelOpen = $state(false)
   let editorPath = $state(null)
   let editedFiles = $state([]) // file paths claude touched in this stream
 
+  // ─── Session token + plan stats ────────────────────────────────────────
+  let sessionStats = $state(null)
+  let planPanelOpen = $state(false)
+  let statsPanelOpen = $state(false)
+
+  function fmtTokens(n) {
+    if (!n) return '0'
+    if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M'
+    if (n >= 1_000) return (n / 1_000).toFixed(1) + 'k'
+    return String(n)
+  }
+
+  function statusIcon(s) {
+    if (s === 'completed') return '✓'
+    if (s === 'in_progress') return '▶'
+    if (s === 'pending') return '○'
+    return '·'
+  }
+
+  function statusColor(s) {
+    if (s === 'completed') return 'text-emerald-400'
+    if (s === 'in_progress') return 'text-amber-300'
+    return 'text-neutral-500'
+  }
+
   function trackEditedFile(toolName, input) {
     const p = input?.file_path || input?.path
     if (!p) return
@@ -850,6 +875,26 @@ let statePanelOpen = $state(false)
     return () => { cancelled = true; clearInterval(int) }
   })
 
+  // Token meter + plan checklist: poll /sessions/{sid}/stats. Faster while
+  // streaming, slower once idle.
+  $effect(() => {
+    const sid = activeSessionId
+    if (!sid) { sessionStats = null; return }
+    let cancelled = false
+    const pull = async () => {
+      try {
+        const r = await fetch(`/api/projects/${project.id}/sessions/${sid}/stats`)
+        if (!r.ok || cancelled) return
+        sessionStats = await r.json()
+      } catch {}
+    }
+    pull()
+    // refresh every 4s while pending (active stream), 30s otherwise
+    const periodMs = pending ? 4000 : 30000
+    const int = setInterval(pull, periodMs)
+    return () => { cancelled = true; clearInterval(int) }
+  })
+
   // Scroll-to-latest button: visible when user has scrolled up >300px from bottom
   let scrolledUp = $state(false)
   function onScroll() {
@@ -974,6 +1019,22 @@ let statePanelOpen = $state(false)
         {/if}
       </div>
     </div>
+    {#if sessionStats}
+      <button
+        class="rounded-md bg-violet-500/15 px-2 py-1 text-xs text-violet-300 hover:bg-violet-500/30"
+        onclick={() => (statsPanelOpen = !statsPanelOpen)}
+        data-testid="tokens-btn"
+        title="Token usage this session"
+      >🎫 {fmtTokens(sessionStats.tokens.total)}</button>
+    {/if}
+    {#if sessionStats && sessionStats.plan.counts.total > 0}
+      <button
+        class="rounded-md bg-amber-500/15 px-2 py-1 text-xs text-amber-300 hover:bg-amber-500/30"
+        onclick={() => (planPanelOpen = !planPanelOpen)}
+        data-testid="plan-btn"
+        title="Current plan (TaskCreate/TaskUpdate)"
+      >📋 {sessionStats.plan.counts.completed}/{sessionStats.plan.counts.total}</button>
+    {/if}
     {#if artifactsCount > 0}
       <button
         class="rounded-md bg-blue-500/15 px-2 py-1 text-xs text-blue-300 hover:bg-blue-500/30"
@@ -1501,6 +1562,72 @@ let statePanelOpen = $state(false)
   open={statePanelOpen}
   onClose={() => (statePanelOpen = false)}
 />
+
+<!-- Plan panel (right drawer): shows TaskCreate/TaskUpdate replay -->
+{#if planPanelOpen}
+  <div class="fixed inset-0 z-40 bg-black/60" onclick={() => (planPanelOpen = false)} role="presentation" data-testid="plan-overlay"></div>
+  <aside class="fixed inset-y-0 right-0 z-50 flex w-[min(460px,92vw)] flex-col border-l border-neutral-800 bg-neutral-950 text-neutral-100 shadow-xl" data-testid="plan-drawer">
+    <div class="flex items-center justify-between border-b border-neutral-800 px-4 py-3">
+      <div class="font-medium">Plan · {sessionStats?.plan.counts.completed ?? 0} / {sessionStats?.plan.counts.total ?? 0}</div>
+      <button class="text-neutral-400 hover:text-neutral-100" onclick={() => (planPanelOpen = false)} data-testid="plan-close">✕</button>
+    </div>
+    <div class="border-b border-neutral-800 bg-neutral-900/50 px-4 py-2 text-xs text-neutral-400">
+      Recorded via TaskCreate/TaskUpdate in this session's transcript.
+    </div>
+    <div class="flex-1 overflow-y-auto px-3 py-2">
+      {#if sessionStats?.plan.tasks?.length}
+        <ol class="space-y-1.5" data-testid="plan-list">
+          {#each sessionStats.plan.tasks as t (t.id)}
+            <li class="flex items-start gap-2 rounded-md border border-neutral-800 bg-neutral-900/60 px-3 py-2 text-sm" data-testid="plan-task-{t.id}">
+              <span class="mt-0.5 w-4 shrink-0 text-base {statusColor(t.status)}">{statusIcon(t.status)}</span>
+              <div class="min-w-0 flex-1">
+                <div class="break-words {t.status === 'completed' ? 'text-neutral-500 line-through' : ''}">{t.subject}</div>
+                <div class="mt-0.5 text-[10px] uppercase tracking-wide {statusColor(t.status)}">{t.status}</div>
+              </div>
+              <span class="shrink-0 text-[10px] text-neutral-600">#{t.id}</span>
+            </li>
+          {/each}
+        </ol>
+      {:else}
+        <div class="px-2 py-4 text-sm text-neutral-500">Belum ada plan. Suruh Claude mulai dengan task list (TaskCreate).</div>
+      {/if}
+    </div>
+  </aside>
+{/if}
+
+<!-- Stats panel (right drawer): token breakdown -->
+{#if statsPanelOpen}
+  <div class="fixed inset-0 z-40 bg-black/60" onclick={() => (statsPanelOpen = false)} role="presentation" data-testid="stats-overlay"></div>
+  <aside class="fixed inset-y-0 right-0 z-50 flex w-[min(420px,92vw)] flex-col border-l border-neutral-800 bg-neutral-950 text-neutral-100 shadow-xl" data-testid="stats-drawer">
+    <div class="flex items-center justify-between border-b border-neutral-800 px-4 py-3">
+      <div class="font-medium">Tokens · {fmtTokens(sessionStats?.tokens.total ?? 0)} total</div>
+      <button class="text-neutral-400 hover:text-neutral-100" onclick={() => (statsPanelOpen = false)} data-testid="stats-close">✕</button>
+    </div>
+    <div class="flex-1 overflow-y-auto px-4 py-3 text-sm">
+      {#if sessionStats}
+        <dl class="grid grid-cols-2 gap-x-3 gap-y-2" data-testid="stats-breakdown">
+          <dt class="text-neutral-400">Input</dt>
+          <dd class="text-right tabular-nums">{fmtTokens(sessionStats.tokens.input)}</dd>
+          <dt class="text-neutral-400">Cache creation</dt>
+          <dd class="text-right tabular-nums">{fmtTokens(sessionStats.tokens.cache_creation)}</dd>
+          <dt class="text-neutral-400">Cache read</dt>
+          <dd class="text-right tabular-nums text-emerald-300">{fmtTokens(sessionStats.tokens.cache_read)}</dd>
+          <dt class="text-neutral-400">Output</dt>
+          <dd class="text-right tabular-nums">{fmtTokens(sessionStats.tokens.output)}</dd>
+          <dt class="border-t border-neutral-800 pt-2 font-medium">Total</dt>
+          <dd class="border-t border-neutral-800 pt-2 text-right font-medium tabular-nums">{fmtTokens(sessionStats.tokens.total)}</dd>
+          <dt class="text-neutral-400">Messages w/ usage</dt>
+          <dd class="text-right tabular-nums text-neutral-500">{sessionStats.tokens.message_count}</dd>
+        </dl>
+        <div class="mt-4 text-xs text-neutral-500">
+          Cache read di-billing ~0.1× rate normal. Subscription user pakai 5h+7d quota bucket — angka di sini sumber data sebenarnya.
+        </div>
+      {:else}
+        <div class="text-neutral-500">No data.</div>
+      {/if}
+    </div>
+  </aside>
+{/if}
 
 <!-- tasks drawer (Phase 5 — persistent project backlog) -->
 {#if tasksOpen}

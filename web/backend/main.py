@@ -50,7 +50,7 @@ import git_utils
 import browser_runs
 from watcher_engine import engine as watcher_engine
 from claude_runner import stream_chat
-from sessions import list_sessions, load_session, delete_session
+from sessions import list_sessions, load_session, delete_session, session_stats
 from auth import (
     auth_middleware,
     current_user,
@@ -1467,6 +1467,15 @@ def get_session_messages(pid: int, sid: str, session: Session = Depends(get_sess
     if not project:
         raise HTTPException(404, "project not found")
     return {"session_id": sid, "messages": load_session(project.path, sid)}
+
+
+@app.get("/api/projects/{pid}/sessions/{sid}/stats")
+def get_session_stats(pid: int, sid: str, session: Session = Depends(get_session)):
+    """Token usage totals + current plan (TaskCreate/TaskUpdate replay) for one session."""
+    project = session.get(Project, pid)
+    if not project:
+        raise HTTPException(404, "project not found")
+    return session_stats(project.path, sid)
 
 
 @app.post("/api/projects/{pid}/switch_session")
