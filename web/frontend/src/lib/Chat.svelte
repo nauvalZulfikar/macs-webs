@@ -153,6 +153,14 @@ let statePanelOpen = $state(false)
   // backend right before stream_done.
   let landedSummary = $state(null)
 
+  // Task #164/#165: optional verify-after-send — UI inputs + verdict display.
+  // verifyUrl + verifyWhat get sent with the message; backend spawns a one-shot
+  // claude that screenshots + judges, emits a `verify_result` event we render.
+  let verifyUrl = $state('')
+  let verifyWhat = $state('')
+  let verifyOpen = $state(false)
+  let verifyResult = $state(null)
+
   function fmtTokens(n) {
     if (!n) return '0'
     if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M'
@@ -471,6 +479,26 @@ let statePanelOpen = $state(false)
       }
       return
     }
+    if (evt.type === 'verify_result') {
+      // Task #165: backend ran the post-send verify hook (one-shot claude that
+      // screenshots verify_url + judges against verify_what). Surface the verdict
+      // + screenshot path inline so the user has evidence without leaving the chat.
+      verifyResult = {
+        pass: !!evt.pass,
+        reason: evt.reason || '',
+        screenshot: evt.screenshot_path || '',
+        url: evt.url || verifyUrl,
+        what: evt.what || verifyWhat,
+        error: evt.error || null,
+      }
+      toast({
+        kind: verifyResult.pass ? 'success' : 'warn',
+        title: verifyResult.pass ? '✓ Verify PASS' : '⚠ Verify FAIL',
+        body: verifyResult.reason.slice(0, 120) || (verifyResult.error ?? 'check inline'),
+        duration: 8000,
+      })
+      return
+    }
   }
 
   async function send(opts = {}) {
@@ -487,6 +515,7 @@ let statePanelOpen = $state(false)
     }
     error = null
     landedSummary = null
+    verifyResult = null
     const useNew = pendingNewConvo
     pendingNewConvo = false
     // Attach uploaded images: append Read instruction + path to the prompt so
@@ -526,6 +555,8 @@ let statePanelOpen = $state(false)
         message: msg,
         newConversation: useNew,
         elevated,
+        verifyUrl: verifyUrl.trim() || null,
+        verifyWhat: verifyWhat.trim() || null,
       })
     } catch (e) {
       // Restore the input + drop the optimistic user/placeholder bubbles so the

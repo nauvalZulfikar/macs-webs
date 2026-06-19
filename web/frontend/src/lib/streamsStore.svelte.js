@@ -82,17 +82,24 @@ export async function startStream({
   message,
   newConversation = false,
   elevated = false,
+  verifyUrl = null,
+  verifyWhat = null,
   onEvent,
 }) {
   const key = streamKeyOf(projectId, sessionId);
+  const body = {
+    message,
+    new_conversation: newConversation,
+    elevated,
+  };
+  if (verifyUrl && verifyWhat) {
+    body.verify_url = verifyUrl;
+    body.verify_what = verifyWhat;
+  }
   const resp = await fetch(`/api/projects/${projectId}/chat/start`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      message,
-      new_conversation: newConversation,
-      elevated,
-    }),
+    body: JSON.stringify(body),
   });
   if (resp.status === 409) {
     const body = await resp.json().catch(() => ({}));
