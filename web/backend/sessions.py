@@ -369,6 +369,22 @@ def get_chat_count(project_path: str) -> int:
     return sum(1 for p in chats_dir.iterdir() if p.suffix == ".md" and p.is_file())
 
 
+def get_chat_total_bytes(project_path: str) -> int:
+    """Return total bytes of all .md files directly inside {project_path}/.macs/chats/.
+
+    Returns 0 if the directory does not exist, is empty, or has no .md files.
+    Symlinks are followed (target size used); subdirectories are not recursed.
+    """
+    chats_dir = Path(project_path) / ".macs" / "chats"
+    if not chats_dir.is_dir():
+        return 0
+    return sum(
+        p.stat().st_size
+        for p in chats_dir.iterdir()
+        if p.suffix == ".md" and p.is_file()
+    )
+
+
 def delete_session(project_path: str, session_id: str) -> bool:
     """Delete a project's `.jsonl` session file. Returns True if removed.
 
