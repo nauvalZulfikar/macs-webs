@@ -1101,6 +1101,15 @@ let statePanelOpen = $state(false)
             ✓ {landedSummary.edits} file landed{landedSummary.rebuildFired ? ' · dist rebuilt' : ''}
           </span>
         {/if}
+        {#if verifyResult}
+          <span
+            class={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] ${verifyResult.pass ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/20 text-rose-300'}`}
+            title={`${verifyResult.url} · ${verifyResult.what}`}
+            data-testid="verify-badge"
+          >
+            {verifyResult.pass ? '✓' : '✗'} Verify: {verifyResult.pass ? 'PASS' : 'FAIL'}
+          </span>
+        {/if}
       </div>
       <div class="truncate text-xs text-neutral-500">
         {project.path}
@@ -1505,6 +1514,55 @@ let statePanelOpen = $state(false)
         {/each}
       </div>
     {/if}
+    <!-- Task #164/#165: optional verify-after-send — URL + what to check.
+         Collapsed by default; expander persists across messages. -->
+    {#if verifyResult}
+      <div class="mx-auto mb-2 max-w-2xl rounded-lg border border-neutral-800 bg-neutral-900/70 p-2 text-xs" data-testid="verify-result-card">
+        <div class="mb-1 flex items-center justify-between">
+          <span class={`font-semibold ${verifyResult.pass ? 'text-emerald-400' : 'text-rose-400'}`}>
+            {verifyResult.pass ? '✓ PASS' : '✗ FAIL'} — {verifyResult.what}
+          </span>
+          <button class="text-neutral-500 hover:text-neutral-200" onclick={() => (verifyResult = null)} aria-label="Dismiss verify result">✕</button>
+        </div>
+        <div class="text-neutral-400 break-words">{verifyResult.reason || verifyResult.error || '—'}</div>
+        {#if verifyResult.screenshot}
+          <div class="mt-2 flex items-center gap-2 text-[10px] text-neutral-500">
+            <span>📸</span>
+            <code class="truncate">{verifyResult.screenshot}</code>
+            <button class="rounded bg-neutral-800 px-2 py-0.5 text-neutral-300 hover:bg-neutral-700" onclick={() => navigator.clipboard?.writeText(verifyResult.screenshot)}>copy path</button>
+          </div>
+        {/if}
+      </div>
+    {/if}
+    <div class="mx-auto mb-1.5 max-w-2xl">
+      <button
+        type="button"
+        class="text-[10px] text-neutral-500 hover:text-neutral-300"
+        onclick={() => (verifyOpen = !verifyOpen)}
+        data-testid="verify-toggle"
+      >
+        {verifyOpen ? '▾' : '▸'} Verify after send (optional)
+      </button>
+      {#if verifyOpen}
+        <div class="mt-1 flex flex-col gap-1 rounded-lg border border-neutral-800 bg-neutral-900/70 p-2">
+          <input
+            type="text"
+            bind:value={verifyUrl}
+            placeholder="verify_url — e.g. http://100.81.47.91:8101/"
+            class="w-full rounded bg-neutral-950/60 px-2 py-1 text-xs text-neutral-200 placeholder-neutral-600 focus:outline-none focus:ring-1 focus:ring-emerald-600/40"
+            data-testid="verify-url-input"
+          />
+          <input
+            type="text"
+            bind:value={verifyWhat}
+            placeholder="verify_what — e.g. login button is visible and clickable"
+            class="w-full rounded bg-neutral-950/60 px-2 py-1 text-xs text-neutral-200 placeholder-neutral-600 focus:outline-none focus:ring-1 focus:ring-emerald-600/40"
+            data-testid="verify-what-input"
+          />
+          <div class="text-[10px] text-neutral-600">After stream ends, backend will screenshot the URL + judge against your "what to check" criterion.</div>
+        </div>
+      {/if}
+    </div>
     <div class="mx-auto flex max-w-2xl items-end gap-2 rounded-2xl border border-neutral-800 bg-neutral-900/70 p-1.5 transition focus-within:border-emerald-600/40 focus-within:bg-neutral-900">
       <label class="inline-flex h-9 cursor-pointer items-center rounded-lg px-2 text-sm text-neutral-400 transition hover:bg-neutral-800 hover:text-neutral-200" title="Attach image">
         <span class="text-base">📎</span>
