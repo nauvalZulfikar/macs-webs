@@ -49,6 +49,13 @@ agents/browser-agent/profiles/
 web/frontend/.vite/
 web/frontend/node_modules/
 
+# Playwright
+web/frontend/test-results/
+web/frontend/playwright-report/
+web/frontend/tests/e2e/screenshots/
+web/frontend/blob-report/
+web/frontend/.playwright/
+
 # Local env
 .env
 .env.local
