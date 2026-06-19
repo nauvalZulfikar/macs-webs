@@ -1,4 +1,5 @@
 """Tests for get_chat_count and get_chat_total_bytes in sessions.py."""
+import os
 import pytest
 import sessions
 
@@ -325,3 +326,37 @@ class TestGetChatTotalBytesSymlinks:
 
         # Assert
         assert result == 0
+
+
+# ---------------------------------------------------------------------------
+# get_chat_count — hardening (regression for /consensus-found bugs)
+# ---------------------------------------------------------------------------
+
+class TestGetChatCountHardening:
+    """Edge cases surfaced by /consensus verify run wf_80ac807f-5ce:
+    - PermissionError when a parent path component is chmod 000
+    - TypeError when project_path is None or a non-str
+    Both must return 0, not raise.
+    """
+
+    def test_none_project_path_returns_zero(self):
+        # Path(None) raises TypeError — must be swallowed.
+        assert sessions.get_chat_count(None) == 0
+
+    def test_non_str_project_path_returns_zero(self):
+        # Path(123) raises TypeError — must be swallowed.
+        assert sessions.get_chat_count(123) == 0  # type: ignore[arg-type]
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses chmod 000")
+    def test_unreadable_parent_returns_zero(self, tmp_path):
+        # chmod 000 on a parent component → is_dir() raises PermissionError.
+        locked = tmp_path / "locked"
+        project = locked / "proj"
+        (project / ".macs" / "chats").mkdir(parents=True)
+        (project / ".macs" / "chats" / "a.md").write_text("x")
+        original_mode = locked.stat().st_mode
+        os.chmod(locked, 0o000)
+        try:
+            assert sessions.get_chat_count(str(project)) == 0
+        finally:
+            os.chmod(locked, original_mode)

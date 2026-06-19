@@ -360,13 +360,22 @@ def _empty_stats(session_id: Optional[str]) -> dict:
 def get_chat_count(project_path: str) -> int:
     """Return count of .md files directly inside {project_path}/.macs/chats/.
 
-    Returns 0 if the directory doesn't exist or is empty.
+    Returns 0 if the directory doesn't exist, is empty, the project_path
+    is invalid (None/non-str), or a parent path component is inaccessible.
     Symlinks with a .md extension count; subdirectories are not recursed.
     """
-    chats_dir = Path(project_path) / ".macs" / "chats"
-    if not chats_dir.is_dir():
+    try:
+        chats_dir = Path(project_path) / ".macs" / "chats"
+    except TypeError:
         return 0
-    return sum(1 for p in chats_dir.iterdir() if p.suffix == ".md" and p.is_file())
+    try:
+        if not chats_dir.is_dir():
+            return 0
+        return sum(
+            1 for p in chats_dir.iterdir() if p.suffix == ".md" and p.is_file()
+        )
+    except OSError:
+        return 0
 
 
 def get_chat_total_bytes(project_path: str) -> int:
