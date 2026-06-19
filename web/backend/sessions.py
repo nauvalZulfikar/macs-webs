@@ -357,6 +357,18 @@ def _empty_stats(session_id: Optional[str]) -> dict:
     }
 
 
+def get_chat_count(project_path: str) -> int:
+    """Return count of .md files directly inside {project_path}/.macs/chats/.
+
+    Returns 0 if the directory doesn't exist or is empty.
+    Symlinks with a .md extension count; subdirectories are not recursed.
+    """
+    chats_dir = Path(project_path) / ".macs" / "chats"
+    if not chats_dir.is_dir():
+        return 0
+    return sum(1 for p in chats_dir.iterdir() if p.suffix == ".md" and p.is_file())
+
+
 def delete_session(project_path: str, session_id: str) -> bool:
     """Delete a project's `.jsonl` session file. Returns True if removed.
 
