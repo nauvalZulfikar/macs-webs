@@ -145,11 +145,20 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         sess = BrowserSession(browser_profile=bp)
         await sess.start()
         try:
-            page = await sess.get_current_page()
-            await page.goto(arguments["url"], wait_until="domcontentloaded")
-            text = (await page.inner_text("body"))[:8000]
-            title = await page.title()
-            probe = await run_security_probe(page)
+            page = await sess.must_get_current_page()
+            await page.goto(arguments["url"])
+            # actor Page (CDP) goto doesn't block on render — wait + scroll so
+            # JS-heavy pages (Tokopedia/Shopee) lazy-load their listings.
+            await asyncio.sleep(4)
+            for _ in range(5):
+                await page.evaluate("() => window.scrollBy(0, document.body.scrollHeight)")
+                await asyncio.sleep(1)
+            text = (await page.evaluate("() => document.body.innerText"))[:8000]
+            title = await page.get_title()
+            try:
+                probe = await run_security_probe(page)
+            except Exception:
+                probe = None
             return [TextContent(type="text", text=json.dumps({
                 "url": arguments["url"],
                 "title": title,
