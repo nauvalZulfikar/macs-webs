@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+import httpx
 import yaml
 from browser_use import Agent as BUAgent
 from browser_use.browser.events import ScreenshotEvent
@@ -21,6 +22,35 @@ from security import (
     build_judge_prompt,
     run_security_probe,
 )
+
+# captcha-solver integration — see ~/coding-projects/captcha-solver
+CAPTCHA_SOLVER_URL = os.getenv("CAPTCHA_SOLVER_URL", "http://127.0.0.1:8901")
+CAPTCHA_AWARENESS_PROMPT = (
+    "If the page presents a CAPTCHA (reCAPTCHA, hCaptcha, Cloudflare Turnstile, "
+    "FunCaptcha, GeeTest, AWS WAF, KeyCaptcha, or a text-image), do NOT try to "
+    "solve it visually. Instead, stop and report the current URL and the CAPTCHA "
+    "type — the orchestrator will route to the local captcha-solver server. "
+)
+
+
+def _captcha_solver_up() -> bool:
+    try:
+        with httpx.Client(timeout=2) as c:
+            r = c.get(f"{CAPTCHA_SOLVER_URL}/health")
+            return r.status_code == 200 and r.json().get("status") == "ok"
+    except Exception:
+        return False
+
+
+async def _solve_captcha_for_url(url: str, timeout_s: float = 90.0) -> dict[str, Any]:
+    """POST to captcha-solver /solve. Never raises."""
+    payload = {"url": url, "type": "auto", "timeout": timeout_s, "headless": True}
+    try:
+        async with httpx.AsyncClient(timeout=timeout_s + 30) as c:
+            r = await c.post(f"{CAPTCHA_SOLVER_URL}/solve", json=payload)
+            return r.json()
+    except Exception as e:
+        return {"ok": False, "reason": f"{type(e).__name__}: {e}", "method": "browser-agent-fallback"}
 
 
 # stderr, not stdout: when this module runs under the MCP stdio server, stdout
@@ -78,6 +108,10 @@ class Agent:
         session = BrowserSession(browser_profile=bp)
 
         task = goal if not start_url else f"Open {start_url} then: {goal}"
+        # Inject CAPTCHA awareness so qwen3 doesn't waste steps trying to defeat
+        # a CAPTCHA visually; it reports + the orchestrator dispatches the solver.
+        if _captcha_solver_up():
+            task = f"{CAPTCHA_AWARENESS_PROMPT}\n\n{task}"
 
         bu_agent = BUAgent(
             task=task,
@@ -176,6 +210,24 @@ class Agent:
             final["error"] = str(e)
             console.print(f"[red]agent error:[/] {e}")
         finally:
+            # CAPTCHA auto-resolve — if the agent stopped incomplete on a page
+            # carrying a CAPTCHA, route to the local captcha-solver and surface
+            # the token in the final result. Best-effort; never re-raises.
+            if final.get("status") != "ok" and _captcha_solver_up():
+                try:
+                    last_url = (final.get("urls_visited") or [None])[-1]
+                    if last_url:
+                        console.rule("[bold yellow]CAPTCHA fallback → captcha-solver[/]")
+                        solve_res = await _solve_captcha_for_url(last_url)
+                        final["captcha_solve"] = solve_res
+                        if solve_res.get("ok"):
+                            console.print(
+                                f"[green]captcha-solver returned token "
+                                f"({solve_res.get('method')}, "
+                                f"{solve_res.get('elapsed_s', 0):.2f}s)[/]"
+                            )
+                except Exception as e:
+                    final["captcha_solve_error"] = f"{type(e).__name__}: {e}"
             stop_screenshot.set()
             try:
                 await asyncio.wait_for(screenshot_task, timeout=3.0)

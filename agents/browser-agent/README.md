@@ -2,6 +2,22 @@
 
 Autonomous browser agent: perception → planner → executor loop.
 
+## captcha-solver integration (auto-on)
+
+When the local `captcha-solver` server is up at `http://127.0.0.1:8901` (run via
+launchd `com.shaka.captcha-solver`), this agent automatically:
+
+1. Prepends a CAPTCHA-awareness preamble to every task so qwen3 doesn't waste
+   steps trying to defeat CAPTCHAs visually — it just reports + stops.
+2. On any non-`ok` finish, checks the last URL the agent visited and POSTs to
+   `captcha-solver`'s `/solve` endpoint as a fallback. The returned token is
+   stashed in `final["captcha_solve"]` for downstream consumers.
+
+Override the solver location with `CAPTCHA_SOLVER_URL=http://...`.
+Disable the integration by stopping the launchd job: `_captcha_solver_up()`
+turns false and both behaviors no-op.
+
+
 - **Perception** — Playwright snapshot of page (tags every interactive element with `[refN]` + body excerpt + security probe).
 - **Planner** — LLM picks the next action. Router tiers: `fast` (Gemma 3 4B), `smart` (Qwen3 8B), `judge` (Claude Opus 4.7).
 - **Executor** — Playwright actions: `goto`, `click`, `fill`, `press`, `scroll`, `wait`, `extract_text`, `screenshot`, `finish`.
