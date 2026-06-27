@@ -167,7 +167,7 @@
 {:else if !authed}
   <Login onSuccess={() => { authed = true; refreshProjects() }} />
 {:else}
-  <div class="grid h-dvh md:grid-cols-[340px_1fr]">
+  <div class="grid h-dvh md:grid-cols-[clamp(260px,22vw,380px)_1fr]">
     <div class="{mobileChatOpen ? 'hidden md:block' : 'block'}">
       <Sidebar
         {projects}

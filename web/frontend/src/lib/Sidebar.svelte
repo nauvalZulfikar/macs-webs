@@ -45,6 +45,17 @@
     const unsub = missionsStore.subscribe((v) => { missionsSnap = v })
     return unsub
   })
+  // Hide fully-completed missions: done count === total AND nothing running / errored.
+  // Keeps the sidebar focused on what still needs attention.
+  let activeMissions = $derived(
+    missionsSnap.filter((m) => {
+      const total = m.total || 0
+      const done = m.counts?.done || 0
+      const running = m.counts?.running || 0
+      const error = m.counts?.error || 0
+      return done < total || running > 0 || error > 0
+    })
+  )
 
   let query = $state('')
   let expanded = $state(new Set())
@@ -292,11 +303,14 @@
     </button>
   </div>
 
-  <!-- Active missions list -->
-  {#if missionsSnap.length > 0}
-    <div class="border-b border-neutral-800 bg-neutral-950/60 px-2 py-1.5">
-      <div class="px-1 pb-1 text-[10px] uppercase tracking-wide text-neutral-500">Missions</div>
-      {#each missionsSnap as m (m.mission_id)}
+  <!-- Active missions list — completed ones hidden, group collapsible via native <details> -->
+  {#if activeMissions.length > 0}
+    <details open class="border-b border-neutral-800 bg-neutral-950/60 px-2 py-1.5 [&>summary::-webkit-details-marker]:hidden">
+      <summary class="flex cursor-pointer list-none items-center justify-between px-1 pb-1 text-[10px] uppercase tracking-wide text-neutral-500 hover:text-neutral-300">
+        <span>Missions ({activeMissions.length})</span>
+        <span class="transition-transform duration-150 [details[open]_&]:rotate-90">▸</span>
+      </summary>
+      {#each activeMissions as m (m.mission_id)}
         {@const sel = activeView === 'mission' && activeMissionId === m.mission_id}
         {@const total = Math.max(m.total || 1, 1)}
         {@const donePct = Math.round(((m.counts.done || 0) / total) * 100)}
@@ -329,7 +343,7 @@
           </div>
         </button>
       {/each}
-    </div>
+    </details>
   {/if}
 
   <!-- Search + New Project -->
