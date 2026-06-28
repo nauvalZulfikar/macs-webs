@@ -24,10 +24,19 @@
     testing = true
     try { await fetch('/api/notify/test', { method: 'POST' }) } finally { testing = false }
   }
+
+  function onKey(e) {
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      onClose?.()
+    }
+  }
 </script>
 
-<div class="fixed inset-0 z-[70] flex items-center justify-center bg-black/70 p-4" data-testid="notify-modal">
-  <div class="w-full max-w-md rounded-2xl border border-amber-500/40 bg-neutral-950 p-4 shadow-xl">
+<svelte:window onkeydown={onKey} />
+
+<div class="fixed inset-0 z-[70] flex items-center justify-center bg-black/70 p-4" data-testid="notify-modal" onclick={() => onClose?.()} role="presentation">
+  <div class="w-full max-w-md rounded-2xl border border-amber-500/40 bg-neutral-950 p-4 shadow-xl" onclick={(e) => e.stopPropagation()} role="dialog" aria-label="Push notifications">
     <div class="mb-3 flex items-center justify-between">
       <div class="flex items-center gap-2"><span class="text-lg">📲</span><span class="font-medium">Push notifications</span></div>
       <button class="text-neutral-400 hover:text-neutral-100" onclick={onClose}>✕</button>
